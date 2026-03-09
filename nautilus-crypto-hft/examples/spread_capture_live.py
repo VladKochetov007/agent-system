@@ -6,11 +6,9 @@ Structurally complete — needs only API keys in environment variables.
 import os
 from decimal import Decimal
 
-from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.config import BinanceDataClientConfig, BinanceExecClientConfig
-from nautilus_trader.adapters.binance.factories import (
-    BinanceLiveDataClientFactory,
-    BinanceLiveExecClientFactory,
+from nautilus_trader.adapters.binance import (
+    BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
+    BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
 from nautilus_trader.config import (
     CacheConfig,
@@ -64,7 +62,8 @@ class SpreadCapture(Strategy):
             (float(book.best_bid_price()) * av + float(book.best_ask_price()) * bv) / (bv + av)
         ))
 
-        pos = self.cache.position_for_instrument(self.config.instrument_id)
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        pos = positions[0] if positions else None
         skew = Decimal(0) if not pos else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
@@ -106,23 +105,23 @@ def main():
         exec_engine=LiveExecEngineConfig(reconciliation=True, reconciliation_lookback_mins=1440),
         data_clients={
             "BINANCE": BinanceDataClientConfig(
-                api_key=os.environ["BINANCE_API_KEY"],
-                api_secret=os.environ["BINANCE_API_SECRET"],
-                account_type=BinanceAccountType.USDT_FUTURE,
+                api_key=os.environ.get("BINANCE_API_KEY", ""),
+                api_secret=os.environ.get("BINANCE_API_SECRET", ""),
+                account_type=BinanceAccountType.USDT_FUTURES,
             ),
         },
         exec_clients={
             "BINANCE": BinanceExecClientConfig(
-                api_key=os.environ["BINANCE_API_KEY"],
-                api_secret=os.environ["BINANCE_API_SECRET"],
-                account_type=BinanceAccountType.USDT_FUTURE,
+                api_key=os.environ.get("BINANCE_API_KEY", ""),
+                api_secret=os.environ.get("BINANCE_API_SECRET", ""),
+                account_type=BinanceAccountType.USDT_FUTURES,
             ),
         },
     )
 
     node = TradingNode(config=config)
-    node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
-    node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
+    node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+    node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 
     strategy = SpreadCapture(SpreadCaptureConfig(
         instrument_id=InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),

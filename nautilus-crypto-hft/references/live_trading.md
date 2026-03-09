@@ -11,9 +11,8 @@ from nautilus_trader.config import (
     LiveExecEngineConfig, LoggingConfig, MessageBusConfig, TradingNodeConfig,
 )
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.adapters.binance.config import BinanceDataClientConfig, BinanceExecClientConfig
-from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.factories import (
+from nautilus_trader.adapters.binance import (
+    BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
     BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
 
@@ -31,14 +30,14 @@ config = TradingNodeConfig(
         "BINANCE": BinanceDataClientConfig(
             api_key=os.environ["BINANCE_API_KEY"],
             api_secret=os.environ["BINANCE_API_SECRET"],
-            account_type=BinanceAccountType.USDT_FUTURE,
+            account_type=BinanceAccountType.USDT_FUTURES,
         ),
     },
     exec_clients={
         "BINANCE": BinanceExecClientConfig(
             api_key=os.environ["BINANCE_API_KEY"],
             api_secret=os.environ["BINANCE_API_SECRET"],
-            account_type=BinanceAccountType.USDT_FUTURE,
+            account_type=BinanceAccountType.USDT_FUTURES,
         ),
     },
     timeout_connection=30.0,
@@ -49,8 +48,8 @@ config = TradingNodeConfig(
 )
 
 node = TradingNode(config=config)
-node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
-node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
+node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 node.trader.add_strategy(MyStrategy(my_config))
 node.build()
 node.run()  # blocks until shutdown signal

@@ -274,7 +274,8 @@ Reduce size as position grows toward maximum:
 
 ```python
 def _inventory_adjusted_size(self) -> Decimal:
-    pos = self.cache.position_for_instrument(self.config.instrument_id)
+    positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+    pos = positions[0] if positions else None
     utilization = abs(pos.signed_qty / float(self.config.max_size)) if pos else 0
     scale = max(0.2, 1.0 - utilization)  # minimum 20% of base size
     return self.instrument.make_qty(self.config.trade_size * Decimal(str(scale)))

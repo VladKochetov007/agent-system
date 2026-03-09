@@ -204,7 +204,9 @@ def on_instrument_status(self, status: InstrumentStatus) -> None:
 
 ```python
 account = self.portfolio.account(Venue("BINANCE"))
-position = self.cache.position_for_instrument(self.config.instrument_id)
+# cache.position_for_instrument() does NOT exist — use positions_open() filtered by instrument
+positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+position = positions[0] if positions else None
 
 if position:
     initial_margin = float(position.quantity) * float(position.avg_px_open) * perp.margin_init
@@ -218,11 +220,15 @@ account.balance_locked(USDT)    # locked as margin
 ## Funding Rate in Backtest
 
 ```python
-from nautilus_trader.persistence.wranglers import GenericDataWrangler
-
-wrangler = GenericDataWrangler(FundingRateUpdate)
-funding_data = wrangler.process(funding_df)
-engine.add_data(funding_data)
+# GenericDataWrangler does NOT exist in v1.224.0
+# Available wranglers: TradeTickDataWrangler, QuoteTickDataWrangler,
+#   OrderBookDeltaDataWrangler, BarDataWrangler
+# For custom data like FundingRateUpdate, construct objects directly:
+funding_events = [
+    FundingRateUpdate(instrument_id=inst_id, rate=rate, ts_event=ts, ts_init=ts)
+    for rate, ts in funding_df.itertuples(index=False)
+]
+engine.add_data(funding_events)
 ```
 
 Funding events process in timestamp order alongside market data.

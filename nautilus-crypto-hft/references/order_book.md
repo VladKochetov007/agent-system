@@ -217,7 +217,8 @@ def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
     for level in bids[:5]:
         price = level.price
         size = level.size     # aggregate size at this level
-        count = level.count   # number of orders (L3 only)
+        # level.count does NOT exist — use level.orders() for L3:
+        # order_count = len(level.orders())  # L3 only — crypto typically L2
 
     # Book analysis
     bid_depth = sum(float(l.size) for l in bids[:10])
@@ -226,7 +227,9 @@ def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
 
     # Execution cost estimation
     avg_px = book.get_avg_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
-    qty_for_notional = book.get_avg_px_qty_for_exposure(OrderSide.BUY, Money(10000, USDT))
+    worst_px = book.get_worst_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
+    # get_avg_px_qty_for_exposure() does NOT exist — compute manually:
+    # notional / avg_px gives approximate quantity for target exposure
 
 def on_order_book_depth(self, depth: OrderBookDepth10) -> None:
     # Pre-aggregated — lower latency than full book access
@@ -263,17 +266,19 @@ def check_before_submit(self, price: Price, side: OrderSide) -> bool:
 
 ### Filtered Views
 
-Remove your orders from the public book to reveal net liquidity:
+Remove your orders from the public book to reveal net liquidity.
+**NOTE**: `book.filtered_view()` does NOT exist in v1.224.0 — implement manually:
 
 ```python
-filtered = book.filtered_view(
-    own_book=own_book,
-    level_limit=10,
-    status=status_filter,
-    buffer=accepted_buffer_ns,
-    timestamp=current_ts,
-)
-filtered.best_bid_price()  # net liquidity bid
+# Manual filtered view: subtract own orders from public book
+own_book = self.cache.own_order_book(self.instrument_id)
+book = self.cache.order_book(self.instrument_id)
+
+# Get public book levels and subtract own order sizes
+for level in book.bids():
+    own_levels = own_book.bids()
+    own_at_price = sum(float(ol.size) for ol in own_levels if ol.price == level.price)
+    net_size = float(level.size) - own_at_price
 ```
 
 ### Safe Cancel Pattern

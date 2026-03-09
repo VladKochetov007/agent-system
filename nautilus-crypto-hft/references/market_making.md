@@ -84,7 +84,8 @@ class MarketMaker(Strategy):
             self._ask_id = ask.client_order_id
 
     def _inventory_skew(self) -> Decimal:
-        pos = self.cache.position_for_instrument(self.config.instrument_id)
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        pos = positions[0] if positions else None
         if pos is None:
             return Decimal(0)
         return -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
@@ -284,7 +285,8 @@ def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
 
 ```python
 def _should_quote(self) -> bool:
-    pos = self.cache.position_for_instrument(self.config.instrument_id)
+    positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+    pos = positions[0] if positions else None
     if pos and abs(pos.signed_qty) >= float(self.config.max_size):
         return False
     return True

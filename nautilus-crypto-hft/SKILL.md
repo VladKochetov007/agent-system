@@ -64,7 +64,9 @@ class MM(Strategy):
         self._requote(Decimal(str(mid)))
 
     def _requote(self, mid: Decimal) -> None:
-        pos = self.cache.position_for_instrument(self.config.instrument_id)
+        # cache.position_for_instrument() does NOT exist — use positions_open() filtered by instrument
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        pos = positions[0] if positions else None
         skew = Decimal(0) if pos is None else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
@@ -210,6 +212,164 @@ def on_bar(self, bar):  # check self.indicators_initialized() first
 # Not implementing reconciliation in LiveExecutionClient
 
 # frozen_account confusion: False = margin checks ARE active (not disabled)
+
+# BinanceAccountType.USDT_FUTURE — WRONG, it's USDT_FUTURES (with S)
+
+# on_timer() is NOT a Strategy callback — use clock.set_timer with callback= param:
+self.clock.set_timer("my_timer", interval=timedelta(seconds=10),
+    callback=self._my_handler)  # handler receives TimeEvent
+
+# load_all=True loads ALL instruments — use load_ids for fast startup:
+InstrumentProviderConfig(load_all=False, load_ids=frozenset({instrument_id}))
+
+# dYdX symbology: BTC-USD.DYDX is WRONG — it's BTC-USD-PERP.DYDX
+
+# BollingerBands(20) — WRONG, requires k (std dev multiplier):
+BollingerBands(20, 2.0)  # period, k — k is mandatory
+
+# MACD(12, 26, 9) — WRONG, 3rd param is ma_type not signal_period:
+MovingAverageConvergenceDivergence(12, 26, MovingAverageType.EXPONENTIAL)
+
+# Actor import path: nautilus_trader.trading.actor — WRONG, it's:
+from nautilus_trader.common.actor import Actor  # correct path
+
+# Indicators from submodules: nautilus_trader.indicators.ema — WRONG:
+from nautilus_trader.indicators import ExponentialMovingAverage  # top-level
+
+# subscribe_data() without client_id or instrument_id — silent error:
+self.subscribe_data(data_type=DataType(MySignal), client_id=ClientId("INTERNAL"))
+
+# BacktestNode.get_engine() before build() returns None:
+node.build()  # MUST call before get_engine()
+engine = node.get_engine(run_config.id)  # now returns engine
+
+# ParquetDataCatalog.data_types() — WRONG, it's:
+catalog.list_data_types()  # returns list of type names
+
+# BacktestEngineConfig import from backtest.config — WRONG:
+from nautilus_trader.backtest.engine import BacktestEngineConfig  # correct
+
+# FillModel(prob_fill_on_stop=...) — WRONG, param doesn't exist in v1.224.0:
+FillModel(prob_fill_on_limit=0.3, prob_slippage=0.5, random_seed=42)  # only these
+
+# catalog.query_first_timestamp(TradeTick) returns None without identifier:
+catalog.query_first_timestamp(TradeTick, identifier="ETHUSDT.BINANCE")  # must pass identifier
+
+# CASH account + frozen_account=False: market orders silently don't fill (0 fills)
+# Use AccountType.MARGIN for derivatives, CASH for spot with proper balances
+
+# fills > orders is normal: a single order can generate multiple partial fills
+
+# cache.position_for_instrument(id) — WRONG, method does NOT exist:
+positions = self.cache.positions_open(instrument_id=inst_id)  # returns list
+pos = positions[0] if positions else None  # get single position (NETTING)
+# Also: cache.positions(instrument_id=), cache.positions_closed(instrument_id=)
+# cache.position(position_id) exists but takes PositionId, not InstrumentId
+
+# engine.trader.cache — WRONG, Trader has no cache attribute:
+engine.cache.accounts()  # use engine.cache directly on BacktestEngine
+
+# GenericDataWrangler — WRONG, does NOT exist in v1.224.0:
+# Available: TradeTickDataWrangler, QuoteTickDataWrangler, OrderBookDeltaDataWrangler, BarDataWrangler
+# For custom data types, construct objects directly and pass list to engine.add_data()
+
+# book.filtered_view() — WRONG, method does NOT exist on OrderBook:
+# Implement own-order subtraction manually using cache.own_order_book()
+
+# level.count — WRONG, BookLevel has no count attribute:
+# BookLevel has: price, size, side, exposure, orders (L3 only)
+
+# book.get_avg_px_qty_for_exposure() — WRONG, does NOT exist:
+# Available: get_avg_px_for_quantity(), get_worst_px_for_quantity(),
+#   get_quantity_for_price(), get_quantity_at_level()
+```
+
+## Indicators
+
+```python
+from nautilus_trader.indicators import (
+    ExponentialMovingAverage,    # EMA(period)
+    SimpleMovingAverage,         # SMA(period)
+    RelativeStrengthIndex,       # RSI(period) — value in [0, 1] not [0, 100]
+    BollingerBands,              # BB(period, k) — k is MANDATORY (e.g. 2.0)
+    MovingAverageConvergenceDivergence,  # MACD(fast, slow, ma_type) — NOT (fast, slow, signal)
+    AverageTrueRange,            # ATR(period)
+    MovingAverageType,           # EXPONENTIAL, SIMPLE, etc.
+)
+
+# Registration: auto-update indicators on each bar
+bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-INTERNAL")
+self.register_indicator_for_bars(bar_type, self.ema)
+self.subscribe_bars(bar_type)
+
+# Guard: indicators_initialized() returns True only when ALL registered indicators ready
+def on_bar(self, bar: Bar) -> None:
+    if not self.indicators_initialized():
+        return  # warmup period (e.g. 20 bars for SMA(20))
+    # safe to read self.ema.value, self.rsi.value, etc.
+```
+
+**RSI range**: NautilusTrader RSI returns values in `[0.0, 1.0]`, not `[0, 100]`. Multiply by 100 if needed.
+
+**Indicator handle methods**: `indicator.handle_bar(bar)`, `indicator.handle_trade_tick(tick)`, `indicator.handle_quote_tick(tick)` for manual updates outside of registration.
+
+## Actors & Custom Data
+
+```python
+from nautilus_trader.common.actor import Actor  # NOT trading.actor
+from nautilus_trader.config import ActorConfig
+from nautilus_trader.core.data import Data
+from nautilus_trader.model.data import DataType
+from nautilus_trader.model.identifiers import ClientId
+
+# Custom data class — must implement ts_event and ts_init properties
+class MySignal(Data):
+    def __init__(self, name: str, value: float, ts_event: int, ts_init: int):
+        self.name = name
+        self.value = value
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+    @property
+    def ts_event(self) -> int: return self._ts_event
+    @property
+    def ts_init(self) -> int: return self._ts_init
+
+# Actor publishes
+self.publish_data(data_type=DataType(MySignal, metadata={"name": "signal"}), data=signal)
+
+# Strategy subscribes — MUST specify client_id or instrument_id
+self.subscribe_data(data_type=DataType(MySignal, metadata={"name": "signal"}),
+                    client_id=ClientId("INTERNAL"))
+# Handled in on_data(self, data) — check isinstance(data, MySignal)
+```
+
+**Actor vs Strategy**: Actors don't have order execution. Use actors for data pipelines, signal generation, logging. Add to engine via `engine.add_actor(actor)`.
+
+## ParquetDataCatalog
+
+```python
+from nautilus_trader.persistence.catalog import ParquetDataCatalog
+
+catalog = ParquetDataCatalog("/path/to/catalog")
+catalog.write_data([instrument])   # write instruments
+catalog.write_data(trade_ticks)    # write any Data objects
+
+# Read back
+instruments = catalog.instruments()
+ticks = catalog.trade_ticks(instrument_ids=["ETHUSDT.BINANCE"])
+quotes = catalog.quote_ticks(instrument_ids=["ETHUSDT.BINANCE"])
+deltas = catalog.order_book_deltas(instrument_ids=["BTCUSDT-PERP.BINANCE"])
+types = catalog.list_data_types()  # NOT .data_types()
+```
+
+**BacktestNode with catalog** — must call `build()` before `get_engine()`:
+
+```python
+node = BacktestNode(configs=[run_config])
+node.build()                                  # builds engines from configs
+engine = node.get_engine(run_config.id)       # None if build() not called
+engine.add_strategy(strategy)
+results = node.run()                          # returns list[BacktestResult]
 ```
 
 ## Performance Checklist

@@ -9,21 +9,21 @@ Venue-specific configuration, data types, rate limits, and resync protocols for 
 ### Configuration
 
 ```python
-from nautilus_trader.adapters.binance.config import (
-    BinanceDataClientConfig, BinanceExecClientConfig, BinanceInstrumentProviderConfig,
+from nautilus_trader.adapters.binance import (
+    BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
+    BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
+from nautilus_trader.config import InstrumentProviderConfig
 
 data_config = BinanceDataClientConfig(
     api_key="...", api_secret="...",
-    account_type=BinanceAccountType.USDT_FUTURE,
-    testnet=False,
-    instrument_provider=BinanceInstrumentProviderConfig(load_all=True, query_commission_rates=True),
+    account_type=BinanceAccountType.USDT_FUTURES,  # note: USDT_FUTURES (with S)
+    instrument_provider=InstrumentProviderConfig(load_all=True),
 )
 
 exec_config = BinanceExecClientConfig(
     api_key="...", api_secret="...",
-    account_type=BinanceAccountType.USDT_FUTURE,
-    testnet=False,
+    account_type=BinanceAccountType.USDT_FUTURES,
 )
 ```
 
@@ -61,11 +61,11 @@ Supported via `PUT /fapi/v1/order`. Amends price and/or quantity in place.
 ### Factory
 
 ```python
-from nautilus_trader.adapters.binance.factories import (
-    BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
+from nautilus_trader.adapters.binance import (
+    BINANCE, BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
-node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
-node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
+node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 ```
 
 ## Bybit
@@ -75,7 +75,10 @@ node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
 ### Configuration
 
 ```python
-from nautilus_trader.adapters.bybit.config import BybitDataClientConfig, BybitExecClientConfig
+from nautilus_trader.adapters.bybit import (
+    BYBIT, BybitDataClientConfig, BybitExecClientConfig, BybitProductType,
+    BybitLiveDataClientFactory, BybitLiveExecClientFactory,
+)
 
 data_config = BybitDataClientConfig(
     api_key="...", api_secret="...",
@@ -118,11 +121,11 @@ Each update contains `crossSequence`. Verify incoming > last processed. On gap �
 ### Factory
 
 ```python
-from nautilus_trader.adapters.bybit.factories import (
-    BybitLiveDataClientFactory, BybitLiveExecClientFactory,
+from nautilus_trader.adapters.bybit import (
+    BYBIT, BybitLiveDataClientFactory, BybitLiveExecClientFactory,
 )
-node.add_data_client_factory("BYBIT", BybitLiveDataClientFactory)
-node.add_exec_client_factory("BYBIT", BybitLiveExecClientFactory)
+node.add_data_client_factory(BYBIT, BybitLiveDataClientFactory)
+node.add_exec_client_factory(BYBIT, BybitLiveExecClientFactory)
 ```
 
 ## dYdX (v4)
@@ -132,12 +135,15 @@ node.add_exec_client_factory("BYBIT", BybitLiveExecClientFactory)
 ### Configuration
 
 ```python
-from nautilus_trader.adapters.dydx.config import DYDXDataClientConfig, DYDXExecClientConfig
+from nautilus_trader.adapters.dydx import (
+    DYDX, DydxDataClientConfig, DydxExecClientConfig,
+    DydxLiveDataClientFactory, DydxLiveExecClientFactory,
+)
 
-data_config = DYDXDataClientConfig(wallet_address="...", is_testnet=False)
+data_config = DydxDataClientConfig(wallet_address="...", is_testnet=False)
 
-exec_config = DYDXExecClientConfig(
-    wallet_address="...", subaccount_number=0, mnemonic="...",
+exec_config = DydxExecClientConfig(
+    wallet_address="...", subaccount=0, private_key="...",
     is_testnet=False, max_retries=3,
     retry_delay_initial_ms=500, retry_delay_max_ms=5000,
 )
@@ -163,11 +169,11 @@ exec_config = DYDXExecClientConfig(
 ### Factory
 
 ```python
-from nautilus_trader.adapters.dydx.factories import (
-    DYDXLiveDataClientFactory, DYDXLiveExecClientFactory,
+from nautilus_trader.adapters.dydx import (
+    DYDX, DydxLiveDataClientFactory, DydxLiveExecClientFactory,
 )
-node.add_data_client_factory("DYDX", DYDXLiveDataClientFactory)
-node.add_exec_client_factory("DYDX", DYDXLiveExecClientFactory)
+node.add_data_client_factory(DYDX, DydxLiveDataClientFactory)
+node.add_exec_client_factory(DYDX, DydxLiveExecClientFactory)
 ```
 
 ## OKX
@@ -272,6 +278,6 @@ config = SomeExchangeConfig(testnet=True)  # routes to testnet URLs
 | Binance | `BTCUSDT.BINANCE` | `BTCUSDT-PERP.BINANCE` | `BTCUSDT-250328.BINANCE` |
 | Bybit | `BTCUSDT.BYBIT` | `BTCUSDT-LINEAR.BYBIT` | — |
 | OKX | `BTC-USDT.OKX` | `BTC-USDT-SWAP.OKX` | `BTC-USDT-240329.OKX` |
-| dYdX | — | `BTC-USD.DYDX` | — |
+| dYdX | — | `BTC-USD-PERP.DYDX` | — |
 
 The `-PERP` suffix is mandatory for Binance perpetuals to distinguish from spot.

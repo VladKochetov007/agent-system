@@ -9,28 +9,37 @@ BacktestEngine, BacktestNode, SimulatedExchange, fill/fee/latency models, queue 
 Direct control, entire dataset in memory. Best for rapid iteration.
 
 ```python
-from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.backtest.config import BacktestEngineConfig
-from nautilus_trader.model.currencies import USDT
+# BacktestEngineConfig is in backtest.engine, NOT backtest.config (verified v1.224.0)
+from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import TraderId, Venue
-from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Money, Currency
 
-config = BacktestEngineConfig(trader_id=TraderId("BACKTESTER-001"))
+config = BacktestEngineConfig(
+    trader_id=TraderId("BACKTESTER-001"),
+    logging=LoggingConfig(log_level="ERROR"),  # reduce noise
+)
 engine = BacktestEngine(config=config)
 
+# Use Currency.from_str — USDT constant from model.currencies may not exist
 engine.add_venue(
-    venue=Venue("SIM"),
+    venue=Venue("BINANCE"),
     oms_type=OmsType.NETTING,
     account_type=AccountType.MARGIN,
-    base_currency=USDT,
-    starting_balances=[Money(1_000_000, USDT)],
+    base_currency=None,  # None = multi-currency account (standard for crypto)
+    starting_balances=[Money(1_000_000, Currency.from_str("USDT"))],
 )
 
 engine.add_instrument(instrument)
-engine.add_data(deltas)
+engine.add_data(ticks)
 engine.add_strategy(strategy)
 engine.run()
+
+# Access cache and results after run
+accounts = engine.cache.accounts()     # NOT engine.trader.cache
+positions = engine.cache.positions()
+engine.dispose()                       # cleanup
 ```
 
 **Deferred sorting** — for multiple instruments, sort once after all data loaded:
@@ -70,7 +79,13 @@ run_config = BacktestRunConfig(
 )
 
 node = BacktestNode(configs=[run_config])
-results = node.run()
+node.build()  # MUST call build() before get_engine() — returns None otherwise
+
+# To add strategy programmatically (instead of ImportableStrategyConfig):
+engine = node.get_engine(run_config.id)
+engine.add_strategy(my_strategy)
+
+results = node.run()  # returns list[BacktestResult]
 ```
 
 ## Venue Configuration
@@ -108,8 +123,8 @@ Data granularity must match — Nautilus cannot synthesize higher from lower.
 
 | Type | Use Case |
 |------|----------|
-| `CASH` | Spot trading — locks notional value |
-| `MARGIN` | Derivatives — tracks initial/maintenance margin |
+| `CASH` | Spot trading — locks notional value. **Warning**: market orders may silently produce 0 fills if insufficient quote currency balance or if `frozen_account=False` enforces checks too strictly. Always verify fills. |
+| `MARGIN` | Derivatives — tracks initial/maintenance margin. Standard for crypto perps backtesting. |
 
 ## Fill Models
 
@@ -137,11 +152,22 @@ BacktestVenueConfig(
 | `ThreeTierFillModel` | 50/30/20 contracts at 3 price levels |
 | `VolumeSensitiveFillModel` | Volume-based fill for market impact |
 
-### Custom FillModel
+### FillModel Constructor (v1.224.0)
 
 ```python
 from nautilus_trader.backtest.models import FillModel
 
+# Only these params exist — prob_fill_on_stop does NOT exist
+fill_model = FillModel(
+    prob_fill_on_limit=0.3,   # probability limit order fills when price touches
+    prob_slippage=0.5,        # probability of 1 tick slippage
+    random_seed=42,           # for reproducibility
+)
+```
+
+### Custom FillModel
+
+```python
 class ConservativeFillModel(FillModel):
     def is_limit_filled(self) -> bool:
         return self._random.random() < self._prob_fill_on_limit
@@ -245,13 +271,28 @@ engine.add_data(deltas)
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
 catalog = ParquetDataCatalog("/path/to/catalog")
-catalog.write_data(quotes)
 
-quotes = catalog.query(
-    QuoteTick,
-    instrument_ids=["BTCUSDT-PERP.BINANCE"],
-    start="2024-01-01", end="2024-01-31",
-)
+# Write instruments first, then data
+catalog.write_data([instrument])  # must be a list
+catalog.write_data(trade_ticks)   # list of TradeTick/QuoteTick/etc.
+
+# Read back — typed methods (preferred)
+instruments = catalog.instruments()
+ticks = catalog.trade_ticks(instrument_ids=["ETHUSDT.BINANCE"])
+quotes = catalog.quote_ticks(instrument_ids=["BTCUSDT-PERP.BINANCE"])
+deltas = catalog.order_book_deltas(instrument_ids=["BTCUSDT-PERP.BINANCE"])
+
+# List what's in the catalog
+types = catalog.list_data_types()  # e.g. ['currency_pair', 'trade_tick']
+# NOTE: .data_types() does NOT exist — use .list_data_types()
+
+# Generic query
+data = catalog.query(QuoteTick, instrument_ids=["..."], start="2024-01-01", end="2024-01-31")
+
+# Timestamps — MUST pass identifier, else returns None
+first = catalog.query_first_timestamp(TradeTick, identifier="ETHUSDT.BINANCE")
+last = catalog.query_last_timestamp(TradeTick, identifier="ETHUSDT.BINANCE")
+
 catalog.consolidate_catalog()
 ```
 
@@ -265,6 +306,33 @@ from nautilus_trader.adapters.tardis.loaders import TardisCSVDataLoader
 deltas_df = TardisCSVDataLoader.load("book_change_BTCUSDT_2024-01.csv")
 trades_df = TardisCSVDataLoader.load("trades_BTCUSDT_2024-01.csv")
 ```
+
+## Test Data Providers
+
+Built-in test data for quick backtest setup without external data:
+
+```python
+from nautilus_trader.test_kit.providers import TestInstrumentProvider, TestDataProvider
+from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
+
+# Pre-built instruments (no API needed)
+ethusdt = TestInstrumentProvider.ethusdt_binance()        # CurrencyPair
+btcusdt_perp = TestInstrumentProvider.btcusdt_perp_binance()  # CryptoPerpetual
+# Also: adausdt_binance, btcusdt_binance, btcusdt_future_binance, etc.
+
+# Test data (pulled from GitHub on first use, cached locally)
+dp = TestDataProvider()
+df = dp.read_csv_ticks("binance/ethusdt-trades.csv")  # returns DataFrame
+# Methods: read_csv_ticks, read_csv_bars, read_parquet_ticks, read_parquet_bars
+
+# Wrangle DataFrame → NautilusTrader objects
+wrangler = TradeTickDataWrangler(instrument=ethusdt)
+ticks = wrangler.process(df)  # list[TradeTick]
+# Wranglers: TradeTickDataWrangler, QuoteTickDataWrangler,
+#            OrderBookDeltaDataWrangler, BarDataWrangler
+```
+
+**Note**: `read_csv_ticks` returns a pandas DataFrame, NOT a list of tick objects. Must use a Wrangler to convert. `pip install "fsspec[http]" requests` may be needed for GitHub data access.
 
 ## Multi-Venue Simulation
 

@@ -5,14 +5,13 @@ Runs out of the box with TestInstrumentProvider — no external data needed.
 
 from decimal import Decimal
 
-from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.backtest.config import BacktestEngineConfig
+from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import AccountType, BookType, OmsType, OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
-from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Currency, Money
+from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 from nautilus_trader.test_kit.providers import TestDataProvider, TestInstrumentProvider
 from nautilus_trader.trading.strategy import Strategy
 
@@ -53,7 +52,8 @@ class SimpleMarketMaker(Strategy):
         self._requote(mid)
 
     def _requote(self, mid: Decimal) -> None:
-        pos = self.cache.position_for_instrument(self.config.instrument_id)
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        pos = positions[0] if positions else None
         skew = Decimal(0) if not pos else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
 
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
@@ -90,22 +90,26 @@ class SimpleMarketMaker(Strategy):
 
 
 if __name__ == "__main__":
-    instrument = TestInstrumentProvider.btcusdt_binance()
+    USDT = Currency.from_str("USDT")
+    # Use ethusdt since we have test trade data for it
+    instrument = TestInstrumentProvider.ethusdt_binance()
     engine = BacktestEngine(config=BacktestEngineConfig(trader_id=TraderId("BACKTESTER-001")))
 
     engine.add_venue(
         venue=Venue("BINANCE"),
         oms_type=OmsType.NETTING,
         account_type=AccountType.MARGIN,
-        base_currency=USDT,
+        base_currency=None,  # multi-currency (USDT settled)
         starting_balances=[Money(100_000, USDT)],
-        book_type=BookType.L2_MBP,
     )
     engine.add_instrument(instrument)
 
     # Use test data — replace with Tardis/Databento data for real backtests
-    quotes = TestDataProvider.audusd_ticks()  # placeholder
-    engine.add_data(quotes)
+    dp = TestDataProvider()
+    df = dp.read_csv_ticks("binance/ethusdt-trades.csv")
+    wrangler = TradeTickDataWrangler(instrument=instrument)
+    ticks = wrangler.process(df)
+    engine.add_data(ticks)
 
     strategy = SimpleMarketMaker(MMConfig(instrument_id=instrument.id))
     engine.add_strategy(strategy)
