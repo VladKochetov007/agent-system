@@ -27,16 +27,74 @@ exec_config = BinanceExecClientConfig(
 )
 ```
 
-### Data Types
+### Data Types — What Actually Works (v1.224.0 tested)
+
+| Subscription | Status | Rate (10 perps, 30s) | Notes |
+|-------------|--------|---------------------|-------|
+| `subscribe_trade_ticks` | **WORKS** | ~100/s | aggTrade stream |
+| `subscribe_quote_ticks` | **WORKS** | ~600/s | bookTicker (BBO) — highest volume |
+| `subscribe_order_book_deltas` | **WORKS** | ~113/s | L2 incremental + snapshot rebuild |
+| `subscribe_mark_prices` | **WORKS** | ~9/s | markPrice stream (includes funding info) |
+| `subscribe_bars` | **WORKS** | 1/min/inst | kline stream (1-MINUTE-LAST-EXTERNAL) |
+| `subscribe_order_book_depth` | **NOT IMPL** | - | NotImplementedError — use deltas instead |
+| `subscribe_funding_rates` | **NOT IMPL** | - | NotImplementedError — mark prices include funding |
+| `subscribe_index_prices` | **NOT IMPL** | - | NotImplementedError |
+| `subscribe_instrument_status` | **NOT IMPL** | - | NotImplementedError |
+
+**Total throughput**: ~24,500 events/30s (~817/s) across 10 instruments.
+
+Books rebuild via REST snapshot then apply incremental deltas. BTC spread=0.01bps, ETH spread=0.05bps.
 
 | Data Type | WS Source | Notes |
 |-----------|-----------|-------|
 | `OrderBookDelta` | depth stream | L2 incremental |
-| `OrderBookDepth10` | depth5/depth10 | Aggregated snapshots |
 | `TradeTick` | aggTrade/trade | Individual trades |
 | `QuoteTick` | bookTicker | Best bid/ask |
 | `Bar` | kline / REST | All intervals |
-| `BinanceFuturesMarkPriceUpdate` | markPrice | Mark + funding |
+| `MarkPriceUpdate` | markPrice | Mark price + funding rate combined |
+
+### REST Data (OI, Funding, Long/Short) — via BinanceHttpClient
+
+Open interest, funding rates, long/short ratios, and mark price are available via REST.
+These are NOT available via Strategy subscriptions — use the HTTP client directly:
+
+```python
+from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
+from nautilus_trader.adapters.binance import BinanceAccountType
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
+import json
+
+# Inside an async context (Actor/Strategy coroutine, or asyncio.run):
+client = get_cached_binance_http_client(
+    clock=clock,
+    account_type=BinanceAccountType.USDT_FUTURES,
+    api_key=api_key, api_secret=api_secret,
+)
+
+# Open Interest
+oi = await client.send_request(HttpMethod.GET, '/fapi/v1/openInterest', {'symbol': 'BTCUSDT'})
+data = json.loads(oi)  # {"symbol":"BTCUSDT","openInterest":"81811.143","time":...}
+
+# Funding Rate (latest N)
+fr = await client.send_request(HttpMethod.GET, '/fapi/v1/fundingRate',
+    {'symbol': 'BTCUSDT', 'limit': '3'})
+
+# Mark Price + Index Price
+mark = await client.send_request(HttpMethod.GET, '/fapi/v1/premiumIndex',
+    {'symbol': 'BTCUSDT'})
+# {"markPrice":"68575.50","indexPrice":"68617.50","lastFundingRate":"-0.000031",...}
+
+# Top Trader Long/Short Ratio
+ratio = await client.send_request(HttpMethod.GET,
+    '/futures/data/topLongShortPositionRatio',
+    {'symbol': 'BTCUSDT', 'period': '5m', 'limit': '3'})
+
+# 24h Ticker (volume)
+ticker = await client.send_request(HttpMethod.GET, '/fapi/v1/ticker/24hr',
+    {'symbol': 'BTCUSDT'})
+```
+
+**NOTE**: `/fapi/v1/allForceOrders` (liquidations) is deprecated — returns 400 "endpoint out of maintenance".
 
 ### Rate Limits
 

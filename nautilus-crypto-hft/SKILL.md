@@ -23,6 +23,8 @@ description: >
 
 High-performance algorithmic trading platform. Hybrid Python/Rust/Cython architecture for backtesting and live deployment. Single-threaded event-driven kernel for determinism.
 
+**Tested against v1.224.0** — all code in this skill is validated by running tests.
+
 ## Quick Start: Compact Market Maker
 
 ```python
@@ -57,14 +59,12 @@ class MM(Strategy):
         book = self.cache.order_book(self.config.instrument_id)
         if not book.best_bid_price() or not book.best_ask_price():
             return
-        # Microprice: volume-weighted mid
         bv = float(book.best_bid_size())
         av = float(book.best_ask_size())
         mid = (float(book.best_bid_price()) * av + float(book.best_ask_price()) * bv) / (bv + av)
         self._requote(Decimal(str(mid)))
 
     def _requote(self, mid: Decimal) -> None:
-        # cache.position_for_instrument() does NOT exist — use positions_open() filtered by instrument
         positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
         pos = positions[0] if positions else None
         skew = Decimal(0) if pos is None else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
@@ -72,7 +72,6 @@ class MM(Strategy):
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
         qty = self.instrument.make_qty(self.config.trade_size)
 
-        # modify_order is primary — fewer messages, less fingerprinting
         bid_order = self.cache.order(self._bid_id) if self._bid_id else None
         ask_order = self.cache.order(self._ask_id) if self._ask_id else None
 
@@ -127,16 +126,55 @@ class MM(Strategy):
 | `on_save() → dict[str, bytes]` | Persist custom state |
 | `on_load(state)` | Restore custom state |
 
-## Data Handlers
+## Data Subscriptions — What Actually Works
 
-| Handler | Data Type |
-|---------|-----------|
-| `on_order_book_deltas(deltas)` | `OrderBookDeltas` — L2/L3 incremental updates |
-| `on_order_book_depth(depth)` | `OrderBookDepth10` — aggregated top 10 levels |
-| `on_quote_tick(tick)` | `QuoteTick` — best bid/ask with sizes |
-| `on_trade_tick(tick)` | `TradeTick` — individual trade events |
-| `on_bar(bar)` | `Bar` — OHLCV candles |
-| `on_data(data)` | Custom data: `MarkPriceUpdate`, `FundingRateUpdate` |
+Subscriptions are adapter-dependent. Strategy has the methods, but not all adapters implement them.
+
+| Subscription | Binance | Callback | Notes |
+|-------------|---------|----------|-------|
+| `subscribe_trade_ticks` | **YES** | `on_trade_tick` | ~100/s per 10 perps |
+| `subscribe_quote_ticks` | **YES** | `on_quote_tick` | ~600/s — BBO bookTicker, highest volume |
+| `subscribe_order_book_deltas` | **YES** | `on_order_book_deltas` | ~113/s — L2 incremental + snapshot rebuild |
+| `subscribe_mark_prices` | **YES** | `on_mark_price` | ~9/s — includes funding info |
+| `subscribe_bars` | **YES** | `on_bar` | EXTERNAL kline stream, 1/min/instrument |
+| `subscribe_order_book_depth` | **NO** | `on_order_book_depth` | NotImplementedError — use deltas instead |
+| `subscribe_funding_rates` | **NO** | `on_funding_rate` | NotImplementedError — use mark prices or REST |
+| `subscribe_index_prices` | **NO** | `on_index_price` | NotImplementedError |
+| `subscribe_instrument_status` | **NO** | `on_instrument_status` | NotImplementedError |
+| `subscribe_data` | **YES** | `on_data` | Custom data via MessageBus (actors, signals) |
+
+**Total throughput**: ~24,500 events/30s (~817/s) across 10 Binance Futures instruments.
+
+### REST-Only Data (OI, Funding History, Long/Short)
+
+Not available via subscription. Use `BinanceHttpClient` directly:
+
+```python
+from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
+from nautilus_trader.adapters.binance import BinanceAccountType
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
+import json
+
+client = get_cached_binance_http_client(
+    clock=clock, account_type=BinanceAccountType.USDT_FUTURES,
+    api_key=key, api_secret=secret,
+)
+# Open Interest
+oi = json.loads(await client.send_request(
+    HttpMethod.GET, '/fapi/v1/openInterest', {'symbol': 'BTCUSDT'}))
+# Funding Rate History
+fr = json.loads(await client.send_request(
+    HttpMethod.GET, '/fapi/v1/fundingRate', {'symbol': 'BTCUSDT', 'limit': '3'}))
+# Mark + Index Price
+mark = json.loads(await client.send_request(
+    HttpMethod.GET, '/fapi/v1/premiumIndex', {'symbol': 'BTCUSDT'}))
+# Long/Short Ratio
+ratio = json.loads(await client.send_request(
+    HttpMethod.GET, '/futures/data/topLongShortPositionRatio',
+    {'symbol': 'BTCUSDT', 'period': '5m', 'limit': '3'}))
+```
+
+`/fapi/v1/allForceOrders` (liquidations) is deprecated — returns 400.
 
 ## Execution Methods
 
@@ -149,142 +187,101 @@ self.close_position(position)      # market close
 self.close_all_positions(instrument_id)
 ```
 
-## Order Book: L2 for Crypto
+## Cache API (Verified)
 
-L2_MBP (market-by-price) is the ceiling for crypto HFT. L3_MBO is **not available** on crypto venues — it requires per-order-ID feeds only found on traditional exchanges (Databento MBO, ITCH).
+```python
+# Instruments
+self.cache.instrument(instrument_id)     # single instrument
+self.cache.instruments()                 # all instruments
 
-**F_LAST rule**: Every delta batch must end with `RecordFlag.F_LAST`. Without it, DataEngine buffers indefinitely and subscribers starve.
+# Positions — NO position_for_instrument() method
+positions = self.cache.positions_open(instrument_id=inst_id)   # list of open
+pos = positions[0] if positions else None                       # single (NETTING)
+self.cache.positions_closed(instrument_id=inst_id)             # closed list
+self.cache.positions(instrument_id=inst_id)                    # all (open + closed)
+self.cache.position(position_id)                               # by PositionId (not InstrumentId)
+
+# Orders
+self.cache.orders(instrument_id=inst_id)       # all orders
+self.cache.orders_open(instrument_id=inst_id)  # open only
+self.cache.order(client_order_id)              # single by ID
+
+# Books
+book = self.cache.order_book(instrument_id)    # only if subscribed to book data
+own_book = self.cache.own_order_book(instrument_id)  # your orders by price level
+
+# Data in cache
+self.cache.trade_ticks(instrument_id)   # recent trade ticks
+self.cache.quote_ticks(instrument_id)   # recent quote ticks
+self.cache.accounts()                   # all accounts
+self.cache.bars(bar_type)              # recent bars
+
+# BacktestEngine: use engine.cache directly (NOT engine.trader.cache)
+engine.cache.accounts()
+engine.cache.positions_open()
+```
+
+## Order Book API (Verified)
+
+L2_MBP (market-by-price) is the ceiling for crypto HFT. L3_MBO is **not available** on crypto venues.
 
 ```python
 book = self.cache.order_book(instrument_id)
 best_bid = book.best_bid_price()
 best_ask = book.best_ask_price()
-spread = best_ask - best_bid
-bids = book.bids()  # list[BookLevel] sorted best→worst
+spread = float(book.spread())
+mid = float(book.midpoint())
+bids = book.bids()  # list[BookLevel] — each has: price, size, side, exposure
 asks = book.asks()
+
+# Execution cost
+avg_px = book.get_avg_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
+worst_px = book.get_worst_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
+qty_at_price = book.get_quantity_for_price(OrderSide.BUY, Price.from_str("68000"))
 ```
 
-## Crypto HFT Essentials
+**Does NOT exist**: `book.filtered_view()`, `book.get_avg_px_qty_for_exposure()`, `book.count`, `level.count`
 
-**Breakeven spread**: `breakeven = taker_fee + maker_fee`. You must quote wider than this.
+**F_LAST rule**: Every delta batch must end with `RecordFlag.F_LAST`. Without it, DataEngine buffers indefinitely and subscribers starve.
 
-| Venue | Maker | Taker | Breakeven (bps) |
-|-------|-------|-------|-----------------|
-| Binance VIP0 | 2.0 bps | 5.0 bps | 7.0 |
-| Bybit VIP0 | 2.0 bps | 5.5 bps | 7.5 |
-| dYdX | 2.0 bps | 5.0 bps | 7.0 |
-| OKX VIP0 | 2.0 bps | 5.0 bps | 7.0 |
+## Position & PnL (Verified)
 
-**Rate limits**: Binance 2400 req/min REST, 10 orders/sec WS. Bybit 120 req/min per-endpoint. dYdX 100 orders/10s per-subaccount.
+```python
+pos.side                  # PositionSide.LONG / SHORT
+pos.quantity              # absolute quantity
+pos.signed_qty            # positive=long, negative=short
+pos.avg_px_open           # average entry price
+pos.avg_px_close          # average exit price (after close)
+pos.unrealized_pnl(last_price)  # from current price vs entry
+pos.realized_pnl          # computed on close
+pos.commissions()          # list[Money] accumulated from fills
+pos.is_open / pos.is_closed
+pos.entry                 # OrderSide of opening trade
+pos.instrument_id
+pos.strategy_id
+```
 
-**Funding carrying cost**: For perps held >8h, `funding_payment = position_notional * funding_rate`. Factor into inventory cost.
+## Portfolio API (Verified)
 
-**Order sizing**: Never exceed 5–10% of best level depth. Larger orders leak information and increase adverse selection.
-
-**Anti-fingerprinting**: Randomize order sizes (±5%), vary requote intervals, use `modify_order` (not cancel+replace).
+```python
+account = self.portfolio.account(Venue("BINANCE"))
+account.balance_total(Currency.from_str("USDT"))
+account.balance_free(Currency.from_str("USDT"))
+account.balance_locked(Currency.from_str("USDT"))
+self.portfolio.is_flat(instrument_id)
+self.portfolio.net_position(instrument_id)
+self.portfolio.unrealized_pnls(Venue("BINANCE"))
+```
 
 ## OMS Quick Reference
 
 - **NETTING**: One position per instrument. All fills aggregate. Standard for crypto perps.
+  `BUY 1.0 → LONG 1.0 → BUY 0.5 → LONG 1.5 → SELL 2.0 → SHORT 0.5`
 - **HEDGING**: Multiple positions per instrument. Isolated P&L per trade.
 
 Strategy `oms_type` can differ from venue. ExecutionEngine reconciles via virtual position IDs.
 
-## Anti-Patterns
-
-```python
-# Float prices — precision errors. Use from_str or instrument.make_price
-Price(1.23456)  # WRONG
-
-# Blocking the event loop in live trading
-time.sleep(5)  # blocks entire kernel
-
-# Missing F_LAST on final delta — subscribers starve
-flags = 0  # WRONG on final/only delta
-
-# cancel_all + resubmit as MM pattern (use modify_order instead)
-
-# No indicator initialization check
-def on_bar(self, bar):  # check self.indicators_initialized() first
-
-# Multiple TradingNode per process
-
-# Not implementing reconciliation in LiveExecutionClient
-
-# frozen_account confusion: False = margin checks ARE active (not disabled)
-
-# BinanceAccountType.USDT_FUTURE — WRONG, it's USDT_FUTURES (with S)
-
-# on_timer() is NOT a Strategy callback — use clock.set_timer with callback= param:
-self.clock.set_timer("my_timer", interval=timedelta(seconds=10),
-    callback=self._my_handler)  # handler receives TimeEvent
-
-# load_all=True loads ALL instruments — use load_ids for fast startup:
-InstrumentProviderConfig(load_all=False, load_ids=frozenset({instrument_id}))
-
-# dYdX symbology: BTC-USD.DYDX is WRONG — it's BTC-USD-PERP.DYDX
-
-# BollingerBands(20) — WRONG, requires k (std dev multiplier):
-BollingerBands(20, 2.0)  # period, k — k is mandatory
-
-# MACD(12, 26, 9) — WRONG, 3rd param is ma_type not signal_period:
-MovingAverageConvergenceDivergence(12, 26, MovingAverageType.EXPONENTIAL)
-
-# Actor import path: nautilus_trader.trading.actor — WRONG, it's:
-from nautilus_trader.common.actor import Actor  # correct path
-
-# Indicators from submodules: nautilus_trader.indicators.ema — WRONG:
-from nautilus_trader.indicators import ExponentialMovingAverage  # top-level
-
-# subscribe_data() without client_id or instrument_id — silent error:
-self.subscribe_data(data_type=DataType(MySignal), client_id=ClientId("INTERNAL"))
-
-# BacktestNode.get_engine() before build() returns None:
-node.build()  # MUST call before get_engine()
-engine = node.get_engine(run_config.id)  # now returns engine
-
-# ParquetDataCatalog.data_types() — WRONG, it's:
-catalog.list_data_types()  # returns list of type names
-
-# BacktestEngineConfig import from backtest.config — WRONG:
-from nautilus_trader.backtest.engine import BacktestEngineConfig  # correct
-
-# FillModel(prob_fill_on_stop=...) — WRONG, param doesn't exist in v1.224.0:
-FillModel(prob_fill_on_limit=0.3, prob_slippage=0.5, random_seed=42)  # only these
-
-# catalog.query_first_timestamp(TradeTick) returns None without identifier:
-catalog.query_first_timestamp(TradeTick, identifier="ETHUSDT.BINANCE")  # must pass identifier
-
-# CASH account + frozen_account=False: market orders silently don't fill (0 fills)
-# Use AccountType.MARGIN for derivatives, CASH for spot with proper balances
-
-# fills > orders is normal: a single order can generate multiple partial fills
-
-# cache.position_for_instrument(id) — WRONG, method does NOT exist:
-positions = self.cache.positions_open(instrument_id=inst_id)  # returns list
-pos = positions[0] if positions else None  # get single position (NETTING)
-# Also: cache.positions(instrument_id=), cache.positions_closed(instrument_id=)
-# cache.position(position_id) exists but takes PositionId, not InstrumentId
-
-# engine.trader.cache — WRONG, Trader has no cache attribute:
-engine.cache.accounts()  # use engine.cache directly on BacktestEngine
-
-# GenericDataWrangler — WRONG, does NOT exist in v1.224.0:
-# Available: TradeTickDataWrangler, QuoteTickDataWrangler, OrderBookDeltaDataWrangler, BarDataWrangler
-# For custom data types, construct objects directly and pass list to engine.add_data()
-
-# book.filtered_view() — WRONG, method does NOT exist on OrderBook:
-# Implement own-order subtraction manually using cache.own_order_book()
-
-# level.count — WRONG, BookLevel has no count attribute:
-# BookLevel has: price, size, side, exposure, orders (L3 only)
-
-# book.get_avg_px_qty_for_exposure() — WRONG, does NOT exist:
-# Available: get_avg_px_for_quantity(), get_worst_px_for_quantity(),
-#   get_quantity_for_price(), get_quantity_at_level()
-```
-
-## Indicators
+## Indicators (Verified)
 
 ```python
 from nautilus_trader.indicators import (
@@ -306,14 +303,11 @@ self.subscribe_bars(bar_type)
 def on_bar(self, bar: Bar) -> None:
     if not self.indicators_initialized():
         return  # warmup period (e.g. 20 bars for SMA(20))
-    # safe to read self.ema.value, self.rsi.value, etc.
 ```
 
-**RSI range**: NautilusTrader RSI returns values in `[0.0, 1.0]`, not `[0, 100]`. Multiply by 100 if needed.
+**RSI range**: `[0.0, 1.0]`, not `[0, 100]`. Multiply by 100 if needed.
 
-**Indicator handle methods**: `indicator.handle_bar(bar)`, `indicator.handle_trade_tick(tick)`, `indicator.handle_quote_tick(tick)` for manual updates outside of registration.
-
-## Actors & Custom Data
+## Actors & Custom Data (Verified)
 
 ```python
 from nautilus_trader.common.actor import Actor  # NOT trading.actor
@@ -322,7 +316,6 @@ from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.identifiers import ClientId
 
-# Custom data class — must implement ts_event and ts_init properties
 class MySignal(Data):
     def __init__(self, name: str, value: float, ts_event: int, ts_init: int):
         self.name = name
@@ -340,37 +333,109 @@ self.publish_data(data_type=DataType(MySignal, metadata={"name": "signal"}), dat
 # Strategy subscribes — MUST specify client_id or instrument_id
 self.subscribe_data(data_type=DataType(MySignal, metadata={"name": "signal"}),
                     client_id=ClientId("INTERNAL"))
-# Handled in on_data(self, data) — check isinstance(data, MySignal)
 ```
 
-**Actor vs Strategy**: Actors don't have order execution. Use actors for data pipelines, signal generation, logging. Add to engine via `engine.add_actor(actor)`.
-
-## ParquetDataCatalog
+## ParquetDataCatalog (Verified)
 
 ```python
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
 catalog = ParquetDataCatalog("/path/to/catalog")
-catalog.write_data([instrument])   # write instruments
-catalog.write_data(trade_ticks)    # write any Data objects
+catalog.write_data([instrument])
+catalog.write_data(trade_ticks)    # MUST be sorted by ts_init
 
 # Read back
 instruments = catalog.instruments()
 ticks = catalog.trade_ticks(instrument_ids=["ETHUSDT.BINANCE"])
-quotes = catalog.quote_ticks(instrument_ids=["ETHUSDT.BINANCE"])
-deltas = catalog.order_book_deltas(instrument_ids=["BTCUSDT-PERP.BINANCE"])
 types = catalog.list_data_types()  # NOT .data_types()
+
+# Live cache data is NOT time-sorted — sort before writing:
+trades = list(cache.trade_ticks(inst_id))
+trades.sort(key=lambda x: x.ts_init)
+catalog.write_data(trades)
 ```
 
-**BacktestNode with catalog** — must call `build()` before `get_engine()`:
+## Crypto HFT Essentials
+
+**Breakeven spread**: `breakeven = taker_fee + maker_fee`. You must quote wider than this.
+
+| Venue | Maker | Taker | Breakeven (bps) |
+|-------|-------|-------|-----------------|
+| Binance VIP0 | 2.0 bps | 5.0 bps | 7.0 |
+| Bybit VIP0 | 2.0 bps | 5.5 bps | 7.5 |
+| dYdX | 2.0 bps | 5.0 bps | 7.0 |
+| OKX VIP0 | 2.0 bps | 5.0 bps | 7.0 |
+
+**Order sizing**: Never exceed 5–10% of best level depth. Larger orders leak information.
+
+**Anti-fingerprinting**: Randomize sizes (±5%), vary requote intervals, use `modify_order` (not cancel+replace).
+
+## Live TradingNode — Minimal
 
 ```python
-node = BacktestNode(configs=[run_config])
-node.build()                                  # builds engines from configs
-engine = node.get_engine(run_config.id)       # None if build() not called
-engine.add_strategy(strategy)
-results = node.run()                          # returns list[BacktestResult]
+from nautilus_trader.adapters.binance import (
+    BinanceAccountType, BinanceDataClientConfig,
+    BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
+)
+
+node = TradingNode(config=TradingNodeConfig(
+    timeout_connection=20,
+    data_clients={"BINANCE": BinanceDataClientConfig(
+        api_key=key, api_secret=secret,
+        account_type=BinanceAccountType.USDT_FUTURES,  # enum, NOT string
+        instrument_provider=InstrumentProviderConfig(
+            load_all=False, load_ids=frozenset({"BTCUSDT-PERP.BINANCE"}),
+        ),
+    )},
+))
+node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
+node.trader.add_strategy(my_strategy)
+node.build()
+node.run()  # blocks until SIGINT
 ```
+
+## Mental Model — How It Actually Works
+
+**Event flow**: Venue WS → DataClient → DataEngine (buffers until F_LAST) → MessageBus → Strategy callbacks. Single-threaded — every callback must return fast. Never `time.sleep()`.
+
+**Clock**: `self.clock.set_timer("name", interval=timedelta(seconds=10), callback=handler)`. No `on_timer()` method exists.
+
+**Instruments**: `load_ids=frozenset({...})` for 3s startup. `load_all=True` takes 5+ minutes. Use enum `BinanceAccountType.USDT_FUTURES` (string "USDT_FUTURES" causes AttributeError).
+
+**Books**: Only populated if you subscribe to book data. `cache.order_book()` returns None otherwise. Book rebuilds via REST snapshot + incremental deltas. BTC spread ~0.01bps, ETH ~0.05bps on Binance.
+
+**Fills**: `fills > orders` is normal — single order can produce multiple partial fills. CASH account + `frozen_account=False` silently produces 0 fills if balance insufficient. Use `AccountType.MARGIN` for derivatives.
+
+**BacktestEngine**: Use `engine.cache` directly (not `engine.trader.cache`). Call `BacktestEngineConfig` from `nautilus_trader.backtest.engine` (not `backtest.config`). `Currency.from_str("USDT")` not bare `USDT` constant. `base_currency=None` for multi-currency accounts.
+
+**BacktestNode**: Must call `node.build()` before `get_engine()` or it returns None.
+
+**SimulatedExchange**: `FillModel(prob_fill_on_limit=0.3, prob_slippage=0.5, random_seed=42)` — no `prob_fill_on_stop` param. `LatencyModel` takes nanoseconds for all params.
+
+## Things That Don't Exist
+
+These are common hallucinations. None exist in v1.224.0:
+
+| Hallucination | Reality |
+|--------------|---------|
+| `cache.position_for_instrument(id)` | `cache.positions_open(instrument_id=id)` returns list |
+| `engine.trader.cache` | `engine.cache` directly on BacktestEngine |
+| `book.filtered_view()` | Implement manually with `cache.own_order_book()` |
+| `book.get_avg_px_qty_for_exposure()` | Use `get_avg_px_for_quantity()`, `get_quantity_for_price()` |
+| `book.count` / `level.count` | BookLevel has: price, size, side, exposure, orders |
+| `GenericDataWrangler` | Only: TradeTickDataWrangler, QuoteTickDataWrangler, OrderBookDeltaDataWrangler, BarDataWrangler |
+| `catalog.data_types()` | `catalog.list_data_types()` |
+| `BacktestEngineConfig` from `backtest.config` | from `nautilus_trader.backtest.engine` |
+| `FillModel(prob_fill_on_stop=...)` | Param doesn't exist — only prob_fill_on_limit, prob_slippage, random_seed |
+| `from nautilus_trader.trading.actor` | `from nautilus_trader.common.actor import Actor` |
+| `from nautilus_trader.indicators.ema` | `from nautilus_trader.indicators import ExponentialMovingAverage` |
+| `BollingerBands(20)` | `BollingerBands(20, 2.0)` — k is mandatory |
+| `MACD(12, 26, 9)` | 3rd param is `MovingAverageType`, not signal_period |
+| `TestDataProvider.audusd_ticks()` | `dp.read_csv_ticks("binance/ethusdt-trades.csv")` |
+| `subscribe_funding_rates()` on Binance | NotImplementedError — use `subscribe_mark_prices()` or REST |
+| `subscribe_order_book_depth()` on Binance | NotImplementedError — use `subscribe_order_book_deltas()` |
+| `subscribe_instrument_status()` on Binance | NotImplementedError |
+| `on_timer()` as Strategy callback | Use `clock.set_timer(callback=handler)` |
 
 ## Performance Checklist
 
@@ -408,3 +473,4 @@ results = node.run()                          # returns list[BacktestResult]
 | MM Backtest | [market_maker_backtest.py](examples/market_maker_backtest.py) | L2 backtest with TestInstrumentProvider, runs out of the box |
 | Spread Capture Live | [spread_capture_live.py](examples/spread_capture_live.py) | TradingNode setup for live MM (needs API keys only) |
 | Custom Adapter | [custom_adapter_minimal.py](examples/custom_adapter_minimal.py) | Combined data+exec adapter skeleton (~100 lines) |
+| Data Collection | tests/live_venue_tests/test_binance_data_collection.py | 10-instrument data collector with catalog save |

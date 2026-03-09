@@ -84,16 +84,22 @@ Perpetual contracts use funding to keep price aligned with spot index.
 ### Subscription
 
 ```python
-from nautilus_trader.model.data import FundingRateUpdate
+# NOTE: subscribe_funding_rates() is NOT IMPLEMENTED on Binance adapter (v1.224.0).
+# Use subscribe_mark_prices() instead — mark price updates include funding info.
+# For historical funding, use REST: /fapi/v1/fundingRate (see exchange_adapters.md)
+
+from nautilus_trader.model.data import MarkPriceUpdate
 
 def on_start(self) -> None:
-    self.subscribe_data(
-        data_type=DataType(FundingRateUpdate, metadata={"instrument_id": self.config.instrument_id}),
-    )
+    # Mark price stream includes funding rate data on Binance
+    self.subscribe_mark_prices(self.config.instrument_id)
 
-def on_data(self, data) -> None:
-    if isinstance(data, FundingRateUpdate):
-        rate = data.value  # e.g., 0.0001 = 1 bp per period
+def on_mark_price(self, update: MarkPriceUpdate) -> None:
+    # MarkPriceUpdate fires ~every 3s per instrument
+    pass
+
+# For explicit funding rate history, use REST via BinanceHttpClient:
+# See exchange_adapters.md → "REST Data (OI, Funding, Long/Short)"
 ```
 
 ### Mechanics
@@ -178,11 +184,15 @@ When insurance fund depletes, the exchange forcibly closes profitable opposing p
 
 ## Circuit Breakers
 
+**NOTE**: `subscribe_instrument_status()` is NOT IMPLEMENTED on Binance adapter (v1.224.0).
+The on_instrument_status callback will never fire. Monitor via REST or external feeds.
+
 ```python
 from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.enums import MarketStatusAction
 
 def on_start(self) -> None:
+    # WARNING: NotImplementedError on Binance — won't receive events
     self.subscribe_instrument_status(self.config.instrument_id)
     self._halted = False
 

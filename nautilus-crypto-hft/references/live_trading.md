@@ -133,14 +133,17 @@ async def generate_mass_status(self, lookback_mins=None) -> ExecutionMassStatus 
 Long-running sessions need periodic purging:
 
 ```python
+# purge params are in MINUTES (not seconds) in v1.224.0
 LiveExecEngineConfig(
-    purge_closed_orders_interval_secs=600,      # 10 minutes
-    purge_closed_positions_interval_secs=600,
-    purge_account_events_interval_secs=900,     # 15 minutes
+    purge_closed_orders_interval_mins=10,
+    purge_closed_orders_buffer_mins=60,         # retention before purge
+    purge_closed_positions_interval_mins=10,
+    purge_closed_positions_buffer_mins=60,
+    purge_account_events_interval_mins=15,
+    purge_account_events_lookback_mins=60,
+    purge_from_database=False,                  # True to also purge from DB
 )
 ```
-
-60-minute safety buffer ensures retention before removal.
 
 ## External Order Claims
 
