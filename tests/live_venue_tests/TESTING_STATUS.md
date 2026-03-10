@@ -28,6 +28,16 @@
 | `request_bars(bar_type)` one arg → needs `start=` param | SKILL.md | TypeError: takes at least 2 positional arguments |
 | Indicator values before init are 0/NaN → partial values (wrong) | SKILL.md | SMA(20) after 5 bars = avg of 5 |
 | Subscribe to missing data raises error → silent 0 data | SKILL.md | ERROR log only, no exception |
+| `BookOrder(price=, size=, side=)` missing `order_id` | order_book.md, adapter_dev_python.md, custom_adapter_minimal.py | TypeError: takes 4 positional args |
+| `float / Decimal` TypeError in skew calc | SKILL.md, market_maker_backtest.py, spread_capture_live.py, market_making.md | `pos.signed_qty` returns float |
+| `book.count` → `book.update_count` | operational_patterns.md, SKILL.md | AttributeError |
+| `interval_ns=` → `interval=timedelta(...)` | microstructure.md | Wrong set_timer param name |
+| `LoggingConfig(log_file_path=)` → `log_directory=` | spread_capture_live.py, live_trading.md | TypeError on config |
+| `MessageBusConfig(database="redis")` → `DatabaseConfig(type="redis")` | live_trading.md, operational_patterns.md | Wrong config type |
+| `TestDataProvider.audusd_ticks()` → `dp.read_csv_ticks()` | dev_environment.md | Method doesn't exist |
+| `cache.orders_filled()` → `cache.orders_closed()` | market_maker_backtest.py | AttributeError |
+| `get_avg_px_for_quantity(side, qty)` args reversed | order_book.md | Wrong arg order |
+| MM backtest subscribed L2 book but loaded trade ticks (0 orders) | market_maker_backtest.py | Silent no-op, rewrote to use trade ticks |
 | Native signal API undocumented: `publish_signal`/`subscribe_signal`/`on_signal` | SKILL.md, actors_and_signals.md | Tested: 698 signals end-to-end |
 | `ParquetDataCatalog.data_types()` → `.list_data_types()` | SKILL.md, backtesting_and_simulation.md | AttributeError |
 | `BacktestNode.get_engine()` before `build()` → must call `build()` first | SKILL.md, backtesting_and_simulation.md | Returns None |
@@ -66,10 +76,12 @@
 | EMA Crossover Example | ema_crossover_backtest.py | **OK** | 12 orders, 6 positions, EMA(10)/EMA(30) crossover on ETHUSDT |
 | Bracket Order Example | bracket_order_backtest.py | **OK** | order_factory.bracket() → entry FILLED, SL+TP set, OTO/OUO contingency |
 | Signal Pipeline Example | signal_pipeline_backtest.py | **OK** | Actor→Strategy: 1396 signals, 612 orders, 306 positions |
-| Market Maker Example | market_maker_backtest.py | **OK** | L2 book MM with inventory skew |
+| Market Maker Example | market_maker_backtest.py | **OK** | 8 orders, 1 position, trade-tick MM with inventory skew |
+| Enrichment Actor | test_enrichment_actor_backtest.py | **OK** | 698 FundingRateUpdate published/received, Actor→Strategy pipeline |
+| Live OI REST | binance_enrichment_actor.py | **OK** | HttpClient.get() → 83069.412 BTC OI from /fapi/v1/openInterest |
 
 **TOTAL: 152/153 OK** (1 failure is missing bar CSV test data — nautilus issue, not ours)
-**Examples: 4/4 OK**
+**Examples: 6/6 OK**
 
 ## Live Data Collection (Binance Futures, 10 perps, 30s)
 
@@ -141,6 +153,14 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 - **Order attribute**: `order.side` (not `order.order_side`), events use `event.order_side`
 - **Bracket factory**: `order_factory.bracket()` tags: `['ENTRY']`, `['STOP_LOSS']`, `['TAKE_PROFIT']`
 - **Clock API**: `utc_now()` → pandas Timestamp, `timestamp_ns()` → int, `set_time_alert(override=)`
+- **FundingRateUpdate**: Actor constructs and publishes via `publish_data`, Strategy receives via `subscribe_data`/`on_data`
+- **BinanceFuturesMarkPriceUpdate**: adapter emits via `@markPrice` WS, contains `funding_rate` (Decimal) + `next_funding_ns`
+- **OpenInterestData custom type**: `Data` subclass with `ts_event`/`ts_init` properties, publish/subscribe works
+- **HttpClient REST**: `nautilus_trader.core.nautilus_pyo3.HttpClient.get()` → async, verified against live Binance OI
+- **queue_for_executor**: schedules async coroutines from sync timer callbacks in Actor
+- **publish_signal value types**: only int/float/str — dict causes KeyError
+- **BookOrder constructor**: requires 4 args `(side, price, size, order_id)` — `order_id=0` for L2
+- **pos.signed_qty type**: returns float (C double), not Decimal — must wrap for Decimal arithmetic
 
 ### Partially Tested
 
@@ -217,3 +237,13 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 - Indicator values before `.initialized` are PARTIAL (e.g. SMA(20) after 5 bars = avg of 5) — not NaN
 - `request_bars(bar_type)` without `start=` param → TypeError: takes at least 2 positional arguments
 - `order_factory.bracket()` is the correct way to create brackets — avoid manual OrderList construction
+- `BookOrder` needs 4 args: `(side, price, size, order_id)` — omitting `order_id` → TypeError
+- `pos.signed_qty` returns `float` — `float / Decimal` raises TypeError, wrap with `Decimal(str(...))`
+- `book.update_count` not `book.count` — the `count` attr doesn't exist on OrderBook
+- `get_avg_px_for_quantity(quantity, order_side)` — quantity first, NOT side first
+- `LoggingConfig` uses `log_directory=` not `log_file_path=`
+- `MessageBusConfig(database=)` takes `DatabaseConfig` object, not a string
+- `subscribe_funding_rates()` → NotImplementedError on Binance; use BinanceFuturesMarkPriceUpdate instead
+- OI has no Binance WebSocket stream — must poll REST `/fapi/v1/openInterest`
+- `publish_signal(value=dict(...))` → KeyError; signal values must be int, float, or str only
+- `cache.orders_closed()` not `cache.orders_filled()` — the latter doesn't exist

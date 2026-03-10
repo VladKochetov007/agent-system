@@ -88,7 +88,7 @@ class MarketMaker(Strategy):
         pos = positions[0] if positions else None
         if pos is None:
             return Decimal(0)
-        return -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
+        return -(Decimal(str(pos.signed_qty)) / self.config.max_size) * self.config.skew_factor
 
     def on_order_filled(self, event) -> None:
         # Position updated by engine — next book update triggers _requote with new skew

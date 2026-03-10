@@ -11,7 +11,7 @@ from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.live.factories import LiveDataClientFactory, LiveExecClientFactory
 from nautilus_trader.model.data import BookOrder, OrderBookDelta, TradeTick
 from nautilus_trader.model.enums import (
-    AccountType, AggressorSide, BookAction, LiquiditySide,
+    AccountType, AggressorSide, BookAction,
     OmsType, OrderSide, RecordFlag,
 )
 from nautilus_trader.model.identifiers import ClientId, TradeId, Venue, VenueOrderId
@@ -53,8 +53,10 @@ class MyExchangeDataClient(LiveMarketDataClient):
                 instrument_id=instrument_id,
                 action=BookAction.DELETE if size.raw == 0 else BookAction.UPDATE,
                 order=BookOrder(
-                    price=Price.from_str(u["price"]), size=size,
                     side=OrderSide.BUY if u["side"] == "Buy" else OrderSide.SELL,
+                    price=Price.from_str(u["price"]),
+                    size=size,
+                    order_id=0,
                 ),
                 flags=RecordFlag.F_LAST if i == len(updates) - 1 else 0,
                 sequence=u.get("seq", 0),

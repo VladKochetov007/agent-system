@@ -78,7 +78,7 @@ def on_order_book(self, book: OrderBook) -> None:
 delta = OrderBookDelta(
     instrument_id=instrument_id,
     action=BookAction.UPDATE,
-    order=BookOrder(price=price, size=qty, side=OrderSide.BUY),
+    order=BookOrder(side=OrderSide.BUY, price=price, size=qty, order_id=0),
     flags=RecordFlag.F_LAST,  # mandatory for standalone
     sequence=seq,
     ts_event=ts_event,
@@ -123,9 +123,10 @@ def _process_snapshot(self, instrument_id, snapshot_data):
             instrument_id=instrument_id,
             action=BookAction.ADD,
             order=BookOrder(
+                side=OrderSide.BUY if is_bid else OrderSide.SELL,
                 price=Price.from_str(level[0]),
                 size=Quantity.from_str(level[1]),
-                side=OrderSide.BUY if is_bid else OrderSide.SELL,
+                order_id=0,
             ),
             flags=flags,
             sequence=snapshot_data.get("lastUpdateId", 0),
@@ -226,8 +227,8 @@ def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
     imbalance = (bid_depth - ask_depth) / (bid_depth + ask_depth)
 
     # Execution cost estimation
-    avg_px = book.get_avg_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
-    worst_px = book.get_worst_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"))
+    avg_px = book.get_avg_px_for_quantity(Quantity.from_str("1.0"), OrderSide.BUY)
+    worst_px = book.get_worst_px_for_quantity(Quantity.from_str("1.0"), OrderSide.BUY)
     # get_avg_px_qty_for_exposure() does NOT exist — compute manually:
     # notional / avg_px gives approximate quantity for target exposure
 

@@ -16,7 +16,7 @@ from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig, StrategyConfig
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
 from nautilus_trader.model.data import DataType, FundingRateUpdate, TradeTick
-from nautilus_trader.model.enums import AccountType, OmsType, OrderSide
+from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
 from nautilus_trader.model.objects import Currency, Money, Price
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler

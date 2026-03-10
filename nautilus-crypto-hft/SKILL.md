@@ -74,7 +74,7 @@ class MM(Strategy):
     def _requote(self, mid: Decimal) -> None:
         positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
         pos = positions[0] if positions else None
-        skew = Decimal(0) if pos is None else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
+        skew = Decimal(0) if pos is None else -(Decimal(str(pos.signed_qty)) / self.config.max_size) * self.config.skew_factor
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
         qty = self.instrument.make_qty(self.config.trade_size)
@@ -301,7 +301,7 @@ worst_px = book.get_worst_px_for_quantity(OrderSide.BUY, Quantity.from_str("1.0"
 qty_at_price = book.get_quantity_for_price(OrderSide.BUY, Price.from_str("68000"))
 ```
 
-**Does NOT exist**: `book.filtered_view()`, `book.get_avg_px_qty_for_exposure()`, `book.count`, `level.count`
+**Does NOT exist**: `book.filtered_view()`, `book.get_avg_px_qty_for_exposure()`, `level.count`. Use `book.update_count` (not `book.count`)
 
 **F_LAST rule**: Every delta batch must end with `RecordFlag.F_LAST`. Without it, DataEngine buffers indefinitely and subscribers starve.
 
@@ -532,11 +532,17 @@ These are common hallucinations. None exist in v1.224.0:
 | `engine.trader.cache` | `engine.cache` directly on BacktestEngine |
 | `book.filtered_view()` | Implement manually with `cache.own_order_book()` |
 | `book.get_avg_px_qty_for_exposure()` | Use `get_avg_px_for_quantity()`, `get_quantity_for_price()` |
-| `book.count` / `level.count` | BookLevel has: price, size, side, exposure, orders |
+| `book.count` | Use `book.update_count` instead |
+| `level.count` | BookLevel has: price, size, side, exposure, orders |
 | `GenericDataWrangler` | Only: TradeTickDataWrangler, QuoteTickDataWrangler, OrderBookDeltaDataWrangler, BarDataWrangler |
 | `catalog.data_types()` | `catalog.list_data_types()` |
 | `BacktestEngineConfig` from `backtest.config` | from `nautilus_trader.backtest.engine` |
 | `FillModel(prob_fill_on_stop=...)` | Param doesn't exist — only prob_fill_on_limit, prob_slippage, random_seed |
+| `BookOrder(price=, size=, side=)` | Missing `order_id`: `BookOrder(side=, price=, size=, order_id=0)` |
+| `get_avg_px_for_quantity(side, qty)` | Args reversed: `get_avg_px_for_quantity(quantity, order_side)` |
+| `LoggingConfig(log_file_path=)` | Use `log_directory=` instead |
+| `cache.orders_filled()` | Use `cache.orders_closed()` |
+| `pos.signed_qty / Decimal(...)` | TypeError: `pos.signed_qty` returns float — wrap: `Decimal(str(pos.signed_qty))` |
 | `from nautilus_trader.trading.actor` | `from nautilus_trader.common.actor import Actor` |
 | `from nautilus_trader.indicators.ema` | `from nautilus_trader.indicators import ExponentialMovingAverage` |
 | `BollingerBands(20)` | `BollingerBands(20, 2.0)` — k is mandatory |

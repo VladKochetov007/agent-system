@@ -9,7 +9,7 @@ from decimal import Decimal
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import TradeTick
-from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TriggerType
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
 from nautilus_trader.model.objects import Currency, Money
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler

@@ -304,7 +304,7 @@ def _jittered_timer(self, base_ms: int = 100) -> None:
     jitter_ms = random.randint(-20, 20)
     self.clock.set_timer(
         name="requote",
-        interval_ns=int((base_ms + jitter_ms) * 1_000_000),
+        interval=timedelta(milliseconds=base_ms + jitter_ms),
     )
 ```
 

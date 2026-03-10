@@ -136,8 +136,9 @@ from nautilus_trader.test_kit.providers import TestInstrumentProvider, TestDataP
 btcusdt = TestInstrumentProvider.btcusdt_binance()
 ethusdt = TestInstrumentProvider.ethusdt_binance()
 xrpusdt = TestInstrumentProvider.xrpusdt_linear_bybit()
-quotes = TestDataProvider.audusd_ticks()
-bars = TestDataProvider.audusd_1min_bar()
+dp = TestDataProvider()
+ticks_df = dp.read_csv_ticks("binance/ethusdt-trades.csv")
+bars_df = dp.read_csv_bars("binance/ethusdt-1-MINUTE-LAST-2021.csv")
 ```
 
 ## Code Quality

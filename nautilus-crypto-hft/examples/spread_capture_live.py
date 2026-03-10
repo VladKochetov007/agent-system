@@ -64,7 +64,7 @@ class SpreadCapture(Strategy):
 
         positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
         pos = positions[0] if positions else None
-        skew = Decimal(0) if not pos else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
+        skew = Decimal(0) if not pos else -(Decimal(str(pos.signed_qty)) / self.config.max_size) * self.config.skew_factor
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
         qty = self.instrument.make_qty(self.config.trade_size)
@@ -101,7 +101,7 @@ class SpreadCapture(Strategy):
 def main():
     config = TradingNodeConfig(
         trader_id="SPREAD-001",
-        logging=LoggingConfig(log_level="INFO", log_level_file="DEBUG", log_file_path="logs/"),
+        logging=LoggingConfig(log_level="INFO", log_level_file="DEBUG", log_directory="logs/"),
         exec_engine=LiveExecEngineConfig(reconciliation=True, reconciliation_lookback_mins=1440),
         data_clients={
             "BINANCE": BinanceDataClientConfig(

@@ -138,9 +138,10 @@ class MyExchangeDataClient(LiveMarketDataClient):
                 instrument_id=instrument_id,
                 action=BookAction.UPDATE if Quantity.from_str(update["size"]).raw > 0 else BookAction.DELETE,
                 order=BookOrder(
+                    side=OrderSide.BUY if update["side"] == "Buy" else OrderSide.SELL,
                     price=Price.from_str(update["price"]),
                     size=Quantity.from_str(update["size"]),
-                    side=OrderSide.BUY if update["side"] == "Buy" else OrderSide.SELL,
+                    order_id=0,
                 ),
                 flags=flags,
                 sequence=msg.get("sequence", 0),

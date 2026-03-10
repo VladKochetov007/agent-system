@@ -1,14 +1,17 @@
 """
-Market maker backtest using L2 order book data.
+Market maker backtest using trade tick data as price source.
 Runs out of the box with TestInstrumentProvider — no external data needed.
+
+For L2-based MM (preferred for production), load OrderBookDelta data
+from Tardis/Databento and use subscribe_order_book_deltas() instead.
 """
 
 from decimal import Decimal
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.enums import AccountType, BookType, OmsType, OrderSide, TimeInForce
+from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
 from nautilus_trader.model.objects import Currency, Money
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
@@ -33,28 +36,16 @@ class SimpleMarketMaker(Strategy):
 
     def on_start(self) -> None:
         self.instrument = self.cache.instrument(self.config.instrument_id)
-        self.subscribe_order_book_deltas(
-            self.config.instrument_id, book_type=BookType.L2_MBP,
-        )
+        self.subscribe_trade_ticks(self.config.instrument_id)
 
-    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        book = self.cache.order_book(self.config.instrument_id)
-        if not book.best_bid_price() or not book.best_ask_price():
-            return
-
-        bv = float(book.best_bid_size())
-        av = float(book.best_ask_size())
-        if bv + av == 0:
-            return
-        mid = Decimal(str(
-            (float(book.best_bid_price()) * av + float(book.best_ask_price()) * bv) / (bv + av)
-        ))
+    def on_trade_tick(self, tick: TradeTick) -> None:
+        mid = Decimal(str(tick.price))
         self._requote(mid)
 
     def _requote(self, mid: Decimal) -> None:
         positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
         pos = positions[0] if positions else None
-        skew = Decimal(0) if not pos else -(pos.signed_qty / self.config.max_size) * self.config.skew_factor
+        skew = Decimal(0) if not pos else -(Decimal(str(pos.signed_qty)) / self.config.max_size) * self.config.skew_factor
 
         bid_px = self.instrument.make_price(mid * (1 - self.config.half_spread + skew))
         ask_px = self.instrument.make_price(mid * (1 + self.config.half_spread + skew))
@@ -91,7 +82,6 @@ class SimpleMarketMaker(Strategy):
 
 if __name__ == "__main__":
     USDT = Currency.from_str("USDT")
-    # Use ethusdt since we have test trade data for it
     instrument = TestInstrumentProvider.ethusdt_binance()
     engine = BacktestEngine(config=BacktestEngineConfig(trader_id=TraderId("BACKTESTER-001")))
 
@@ -99,12 +89,11 @@ if __name__ == "__main__":
         venue=Venue("BINANCE"),
         oms_type=OmsType.NETTING,
         account_type=AccountType.MARGIN,
-        base_currency=None,  # multi-currency (USDT settled)
+        base_currency=None,
         starting_balances=[Money(100_000, USDT)],
     )
     engine.add_instrument(instrument)
 
-    # Use test data — replace with Tardis/Databento data for real backtests
     dp = TestDataProvider()
     df = dp.read_csv_ticks("binance/ethusdt-trades.csv")
     wrangler = TradeTickDataWrangler(instrument=instrument)
@@ -115,5 +104,6 @@ if __name__ == "__main__":
     engine.add_strategy(strategy)
     engine.run()
 
-    print(engine.trader.generate_order_fills_report())
-    print(engine.trader.generate_positions_report())
+    print(f"Total orders: {len(engine.cache.orders())}")
+    print(f"Total closed: {len(engine.cache.orders_closed())}")
+    print(f"Total positions: {len(engine.cache.positions())}")

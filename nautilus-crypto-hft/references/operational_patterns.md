@@ -178,7 +178,7 @@ Strategy should handle the gap:
 ```python
 def on_order_book_deltas(self, deltas) -> None:
     book = self.cache.order_book(self.config.instrument_id)
-    if book.count == 0:
+    if book.update_count == 0:
         return  # book empty — awaiting snapshot after reconnect
 ```
 
@@ -210,11 +210,11 @@ self.log.debug("Verbose detail")  # only visible at DEBUG level
 Stream MessageBus events to Redis/Kafka for external monitoring:
 
 ```python
-from nautilus_trader.config import MessageBusConfig
+from nautilus_trader.config import DatabaseConfig, MessageBusConfig
 
 msgbus_config = MessageBusConfig(
+    database=DatabaseConfig(type="redis", host="localhost", port=6379),
     external_streams=["data.*", "events.order.*", "events.position.*"],
-    stream_signal="redis://localhost:6379",
 )
 ```
 

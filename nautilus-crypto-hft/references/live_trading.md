@@ -239,7 +239,7 @@ CMD ["python", "run_trading.py"]
 LoggingConfig(
     log_level="INFO",
     log_level_file="DEBUG",
-    log_file_path="logs/",
+    log_directory="logs/",
 )
 ```
 
@@ -249,8 +249,7 @@ Implemented in Rust for performance. Nanosecond timestamps, structured key-value
 
 ```python
 MessageBusConfig(
-    database="redis",
-    stream="nautilus",
+    database=DatabaseConfig(type="redis", host="localhost", port=6379),
     use_instance_id=True,
     streams_prefix="trader",
 )
