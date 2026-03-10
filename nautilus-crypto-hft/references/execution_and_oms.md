@@ -212,6 +212,10 @@ order_list = OrderList(
 self.submit_order_list(order_list)
 ```
 
+**Preferred**: Use `order_factory.bracket()` for standard entry+SL+TP brackets — it handles contingency linking, tags (`ENTRY`, `STOP_LOSS`, `TAKE_PROFIT`), and ID generation automatically. See [bracket_order_backtest.py](../examples/bracket_order_backtest.py) for a runnable example.
+
+**Attribute note**: Orders use `order.side`, events use `event.order_side`. Mixing them causes `AttributeError`.
+
 ### OCO (One-Cancels-Other)
 
 When one fills/cancels, the other is automatically canceled.

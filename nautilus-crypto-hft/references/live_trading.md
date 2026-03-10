@@ -269,3 +269,5 @@ External systems consume Nautilus events via Redis streams.
 - [ ] Running as standalone script (not notebook)?
 - [ ] Signal handling for graceful shutdown?
 - [ ] Separate testnet validation before mainnet?
+
+For detailed error recovery, circuit breakers, reconnection handling, and production monitoring patterns, see [operational_patterns.md](operational_patterns.md).

@@ -16,7 +16,11 @@ description: >
   "HFT order book strategy", "microprice", "adverse selection", "VPIN",
   "breakeven spread", "anti-fingerprinting", "CryptoPerpetual", "CryptoFuture",
   "funding rate", "mark price", "liquidation", "fill model", "fee model",
-  "latency model", "queue position", "custom adapter crypto".
+  "latency model", "queue position", "custom adapter crypto",
+  "OrderList", "submit_order_list", "ContingencyType", "bracket order",
+  "set_timer", "set_time_alert", "clock", "timer", "Actor", "ActorConfig",
+  "publish_signal", "subscribe_signal", "on_signal", "publish_data",
+  "order_factory.bracket", "trailing_stop", "on_market_exit".
 ---
 
 # NautilusTrader — Crypto HFT
@@ -125,6 +129,60 @@ class MM(Strategy):
 | `on_resume()` / `on_reset()` | State management between runs |
 | `on_save() → dict[str, bytes]` | Persist custom state |
 | `on_load(state)` | Restore custom state |
+
+## Subscription Ordering (Critical)
+
+### Correct `on_start()` sequence:
+
+```python
+def on_start(self) -> None:
+    # 1. Cache instrument FIRST — returns None if not loaded (silent, crashes later)
+    self.instrument = self.cache.instrument(self.config.instrument_id)
+    if self.instrument is None:
+        self.log.error(f"Instrument not found: {self.config.instrument_id}")
+        return
+
+    # 2. Register indicators for bar type BEFORE subscribing
+    bar_type = BarType.from_str(f"{self.config.instrument_id}-1-MINUTE-LAST-INTERNAL")
+    self.register_indicator_for_bars(bar_type, self.ema)
+
+    # 3. Subscribe to data AFTER instrument confirmed and indicators registered
+    self.subscribe_bars(bar_type)
+    self.subscribe_trade_ticks(self.config.instrument_id)
+    self.subscribe_order_book_deltas(self.config.instrument_id, book_type=BookType.L2_MBP)
+```
+
+### Silent failures — no error, just 0 data:
+
+| Wrong | What happens |
+|-------|-------------|
+| `subscribe_quote_ticks()` but only trade data loaded | 0 quotes, no error |
+| `subscribe_bars()` EXTERNAL but no bar data loaded | 0 bars, no error |
+| `subscribe_trade_ticks(fake_id)` | ERROR log but no exception, 0 data |
+| `cache.instrument(wrong_id)` | Returns `None`, crashes on `make_price()` later |
+| `subscribe_order_book_deltas()` but only trade data loaded | 0 deltas, no error |
+
+### INTERNAL vs EXTERNAL bars:
+
+| Bar Source | Data Required | Backtest | Live |
+|------------|--------------|----------|------|
+| `INTERNAL` | Trade ticks (or quote ticks) loaded | Aggregated locally from ticks | Aggregated from subscribed tick stream |
+| `EXTERNAL` | Bar data loaded (or venue kline stream) | From `engine.add_data(bars)` | From venue kline WebSocket |
+
+In live: EXTERNAL is 1 bar/min/instrument from venue. INTERNAL aggregates from your tick subscriptions with more flexibility (tick/volume/value bars).
+
+### Indicator warmup — why `indicators_initialized()` matters:
+
+```python
+def on_bar(self, bar: Bar) -> None:
+    if not self.indicators_initialized():
+        return  # CRITICAL — values are WRONG before warmup, not NaN
+
+    # SMA(20) after 5 bars = average of 5 bars (not 20) — silently incorrect
+    # Only after 20 bars does SMA(20).initialized become True
+```
+
+SMA/EMA/RSI produce **partial values** before warmup — not NaN, not zero, just wrong numbers. Trading on partial indicators produces garbage signals.
 
 ## Data Subscriptions — What Actually Works
 
@@ -273,6 +331,30 @@ self.portfolio.net_position(instrument_id)
 self.portfolio.unrealized_pnls(Venue("BINANCE"))
 ```
 
+## Bracket Orders (Verified)
+
+`order_factory.bracket()` creates an `OrderList` with entry + SL + TP, properly linked:
+
+```python
+bracket = self.order_factory.bracket(
+    instrument_id=inst.id,
+    order_side=OrderSide.BUY,
+    quantity=inst.make_qty(Decimal("0.01")),
+    tp_price=inst.make_price(Decimal("440.00")),         # take-profit limit
+    sl_trigger_price=inst.make_price(Decimal("415.00")), # stop-loss trigger
+    # Defaults: entry=MARKET, SL=STOP_MARKET, TP=LIMIT(post_only=True)
+    # Contingency: entry=OTO→children, SL↔TP=OUO (one-updates-other)
+)
+self.submit_order_list(bracket)  # submits all 3 atomically
+# bracket.orders[0] = entry (tags=['ENTRY'])
+# bracket.orders[1] = stop-loss (tags=['STOP_LOSS'])
+# bracket.orders[2] = take-profit (tags=['TAKE_PROFIT'])
+```
+
+**Venue requirement**: `support_contingent_orders=True` on backtest venue config. On live venues, OTO/OUO support varies.
+
+Full `bracket()` signature supports: `entry_order_type`, `entry_price`, `tp_order_type`, `sl_order_type`, `tp_trailing_offset`, `sl_trailing_offset`, `emulation_trigger`, and more. See [execution_and_oms.md](references/execution_and_oms.md).
+
 ## OMS Quick Reference
 
 - **NETTING**: One position per instrument. All fills aggregate. Standard for crypto perps.
@@ -307,33 +389,49 @@ def on_bar(self, bar: Bar) -> None:
 
 **RSI range**: `[0.0, 1.0]`, not `[0, 100]`. Multiply by 100 if needed.
 
-## Actors & Custom Data (Verified)
+## Signals (Native API — Preferred)
+
+Simplest way to pass data between Actors and Strategies. No custom class needed.
+
+```python
+# Actor/Strategy publishes — name becomes class SignalMomentum, SignalEma, etc.
+self.publish_signal(name="momentum", value=42.5, ts_event=tick.ts_event)
+
+# Strategy/Actor subscribes
+self.subscribe_signal(name="momentum")  # specific signal
+self.subscribe_signal()                  # ALL signals
+
+# Handler — signal.value is the published value, type(signal).__name__ for routing
+def on_signal(self, signal) -> None:
+    momentum = signal.value  # float/dict/list — whatever was published
+    sig_type = type(signal).__name__  # "SignalMomentum"
+```
+
+For structured multi-field data, use custom `Data` subclass + `publish_data`/`subscribe_data` (see [actors_and_signals.md](references/actors_and_signals.md)).
+
+## Actors (Verified)
 
 ```python
 from nautilus_trader.common.actor import Actor  # NOT trading.actor
 from nautilus_trader.config import ActorConfig
-from nautilus_trader.core.data import Data
-from nautilus_trader.model.data import DataType
-from nautilus_trader.model.identifiers import ClientId
-
-class MySignal(Data):
-    def __init__(self, name: str, value: float, ts_event: int, ts_init: int):
-        self.name = name
-        self.value = value
-        self._ts_event = ts_event
-        self._ts_init = ts_init
-    @property
-    def ts_event(self) -> int: return self._ts_event
-    @property
-    def ts_init(self) -> int: return self._ts_init
-
-# Actor publishes
-self.publish_data(data_type=DataType(MySignal, metadata={"name": "signal"}), data=signal)
-
-# Strategy subscribes — MUST specify client_id or instrument_id
-self.subscribe_data(data_type=DataType(MySignal, metadata={"name": "signal"}),
-                    client_id=ClientId("INTERNAL"))
 ```
+
+Actors are Strategies without order management. Same lifecycle, same data subscriptions, same clock/timers. Use them to separate signal computation from trading logic.
+
+```python
+class EmaActor(Actor):
+    def on_start(self):
+        inst = self.cache.instruments()[0]
+        self.subscribe_trade_ticks(inst.id)
+    def on_trade_tick(self, tick):
+        self.ema.handle_trade_tick(tick)
+        if self.ema.initialized:
+            self.publish_signal(name="ema", value=self.ema.value, ts_event=tick.ts_event)
+
+# Registration: engine.add_actor(actor) for backtest, node.trader.add_actor(actor) for live
+```
+
+See [actors_and_signals.md](references/actors_and_signals.md) for full reference.
 
 ## ParquetDataCatalog (Verified)
 
@@ -398,7 +496,7 @@ node.run()  # blocks until SIGINT
 
 **Event flow**: Venue WS → DataClient → DataEngine (buffers until F_LAST) → MessageBus → Strategy callbacks. Single-threaded — every callback must return fast. Never `time.sleep()`.
 
-**Clock**: `self.clock.set_timer("name", interval=timedelta(seconds=10), callback=handler)`. No `on_timer()` method exists.
+**Clock**: `self.clock.set_timer("name", interval=timedelta(seconds=10), callback=handler)` for recurring, `self.clock.set_time_alert("name", alert_time, callback=handler)` for one-shot. `cancel_timer("name")` to stop. `utc_now()` returns pandas Timestamp, `timestamp_ns()` returns int. No `on_timer()` method exists. See [clock_and_timers.md](references/clock_and_timers.md).
 
 **Instruments**: `load_ids=frozenset({...})` for 3s startup. `load_all=True` takes 5+ minutes. Use enum `BinanceAccountType.USDT_FUTURES` (string "USDT_FUTURES" causes AttributeError).
 
@@ -436,6 +534,12 @@ These are common hallucinations. None exist in v1.224.0:
 | `subscribe_order_book_depth()` on Binance | NotImplementedError — use `subscribe_order_book_deltas()` |
 | `subscribe_instrument_status()` on Binance | NotImplementedError |
 | `on_timer()` as Strategy callback | Use `clock.set_timer(callback=handler)` |
+| `order.order_side` | `order.side` — events use `event.order_side`, orders use `order.side` |
+| `is_bracket` as property | `bracket.is_bracket()` is a method, not property |
+| Manual OrderList for brackets | Use `order_factory.bracket(...)` — built-in factory method |
+| Subscribing produces an error if data isn't available | Silent: 0 callbacks, no exception, just ERROR log |
+| Indicator values are NaN/zero before `initialized` | Partial values (e.g. SMA(20) after 5 bars = avg of 5) — wrong, not missing |
+| `request_bars(bar_type)` with one arg | Requires `start` datetime: `request_bars(bar_type, start=datetime(...))` |
 
 ## Performance Checklist
 
@@ -464,6 +568,9 @@ These are common hallucinations. None exist in v1.224.0:
 | Python LiveDataClient, LiveExecutionClient | [adapter_development_python.md](references/adapter_development_python.md) | Building Python adapters |
 | Rust crate structure, PyO3, HTTP/WS clients | [adapter_development_rust.md](references/adapter_development_rust.md) | Building Rust adapters |
 | TradingNode, persistence, reconciliation, deployment | [live_trading.md](references/live_trading.md) | Live trading operations |
+| Timers, alerts, scheduling, clock API | [clock_and_timers.md](references/clock_and_timers.md) | Any timer/scheduling logic |
+| Actor lifecycle, signals, custom data pipeline | [actors_and_signals.md](references/actors_and_signals.md) | Signal separation, data enrichment |
+| Graceful shutdown, error recovery, production ops | [operational_patterns.md](references/operational_patterns.md) | Production live trading |
 | Build system, testing, CI/CD, FFI contract | [dev_environment.md](references/dev_environment.md) | NautilusTrader development |
 
 ## Runnable Examples
@@ -473,4 +580,7 @@ These are common hallucinations. None exist in v1.224.0:
 | MM Backtest | [market_maker_backtest.py](examples/market_maker_backtest.py) | L2 backtest with TestInstrumentProvider, runs out of the box |
 | Spread Capture Live | [spread_capture_live.py](examples/spread_capture_live.py) | TradingNode setup for live MM (needs API keys only) |
 | Custom Adapter | [custom_adapter_minimal.py](examples/custom_adapter_minimal.py) | Combined data+exec adapter skeleton (~100 lines) |
+| EMA Crossover | [ema_crossover_backtest.py](examples/ema_crossover_backtest.py) | Signal-based strategy with EMA indicators |
+| Bracket Orders | [bracket_order_backtest.py](examples/bracket_order_backtest.py) | OTO bracket (entry + SL + TP) with order_factory.bracket() |
+| Signal Pipeline | [signal_pipeline_backtest.py](examples/signal_pipeline_backtest.py) | Actor→Strategy signal flow with publish_signal/on_signal |
 | Data Collection | tests/live_venue_tests/test_binance_data_collection.py | 10-instrument data collector with catalog save |
