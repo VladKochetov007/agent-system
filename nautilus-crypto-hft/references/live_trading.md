@@ -15,6 +15,7 @@ from nautilus_trader.adapters.binance import (
     BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
     BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
+from nautilus_trader.adapters.binance.common.enums import BinanceKeyType
 
 config = TradingNodeConfig(
     trader_id="CRYPTO-HFT-001",
@@ -27,16 +28,18 @@ config = TradingNodeConfig(
         reconciliation_lookback_mins=1440,
     ),
     data_clients={
-        "BINANCE": BinanceDataClientConfig(
+        BINANCE: BinanceDataClientConfig(
             api_key=os.environ["BINANCE_API_KEY"],
             api_secret=os.environ["BINANCE_API_SECRET"],
+            key_type=BinanceKeyType.ED25519,  # REQUIRED — HMAC rejected by WS API session.logon
             account_type=BinanceAccountType.USDT_FUTURES,
         ),
     },
     exec_clients={
-        "BINANCE": BinanceExecClientConfig(
+        BINANCE: BinanceExecClientConfig(
             api_key=os.environ["BINANCE_API_KEY"],
             api_secret=os.environ["BINANCE_API_SECRET"],
+            key_type=BinanceKeyType.ED25519,
             account_type=BinanceAccountType.USDT_FUTURES,
         ),
     },
@@ -270,3 +273,64 @@ External systems consume Nautilus events via Redis streams.
 - [ ] Separate testnet validation before mainnet?
 
 For detailed error recovery, circuit breakers, reconnection handling, and production monitoring patterns, see [operational_patterns.md](operational_patterns.md).
+
+## Binance Key Type Requirements (Verified with Real Trades)
+
+**Ed25519 keys are REQUIRED** for the Binance exec client WS API (`/ws-api/v3`). The `session.logon` endpoint rejects HMAC-SHA-256 keys.
+
+| Key Type | Data Client | Exec Client (Spot) | Exec Client (Futures) |
+|----------|-------------|--------------------|-----------------------|
+| HMAC | Works | **FAILS** — `session.logon` rejects | Works (REST listenKey fallback) |
+| Ed25519 | Works | **Works** | **Works** |
+
+```python
+from nautilus_trader.adapters.binance.common.enums import BinanceKeyType
+# BinanceKeyType.HMAC, BinanceKeyType.RSA, BinanceKeyType.ED25519
+
+# MUST set key_type on BOTH data and exec configs:
+BinanceDataClientConfig(api_key=key, api_secret=secret, key_type=BinanceKeyType.ED25519, ...)
+BinanceExecClientConfig(api_key=key, api_secret=secret, key_type=BinanceKeyType.ED25519, ...)
+```
+
+**Ed25519 key format**: The private key MUST be unencrypted PKCS#8 (48 bytes base64, starts with `MC4CAQAw`). Encrypted (PBES2) keys fail with `-1022 invalid signature`. Decrypt with: `openssl pkey -in encrypted.pem -out decrypted.pem`
+
+### HMAC Fallback Behavior
+
+The adapter's `_use_rest_listen_key` property returns `True` for futures + non-Ed25519. This means:
+- **Futures + HMAC**: adapter skips WS API entirely, uses REST `POST /fapi/v1/listenKey` — data works, but no WS order API
+- **Spot + HMAC**: NO fallback — `session.logon` fails, exec client never connects, orders fail with "no execution client found"
+
+## Min Notional Requirements (Verified)
+
+| Pair | Market | Min Notional | Min Qty | Step | Example |
+|------|--------|-------------|---------|------|---------|
+| ETHUSDT | Spot | 5 USDT | 0.0001 ETH | 0.0001 | 0.005 ETH × $2075 = $10.38 ✓ |
+| ETHUSDT | Futures | **20 USDT** | 0.001 ETH | 0.001 | 0.010 ETH × $2075 = $20.75 ✓ |
+
+RiskEngine also checks `NOTIONAL_EXCEEDS_FREE_BALANCE` for spot — limit order notional must be ≤ free balance.
+
+### Futures Leverage
+
+New Binance Futures accounts default to **1x leverage**. Must set via API before trading:
+
+```python
+# POST /fapi/v1/leverage
+# Returns: {"symbol": "ETHUSDT", "leverage": 10, "maxNotionalValue": "150000000"}
+```
+
+At 10x leverage, 0.010 ETH ($20.75) requires only ~$2.08 margin.
+
+### Internal Transfers
+
+```python
+# Spot → USDT-M Futures: POST /sapi/v1/asset/transfer
+# type=MAIN_UMFUTURE, asset=USDT, amount=15
+```
+
+## Order Lifecycle (Verified with Real Trades)
+
+**Market order (Spot)**: submit → OrderSubmitted → OrderAccepted → OrderFilled
+**Market order (Futures)**: submit → OrderSubmitted → OrderFilled (possibly multiple partial fills)
+**Limit order (Futures)**: submit → Submitted → Accepted → (modify) → PendingUpdate → Updated → (cancel) → PendingCancel → Canceled
+
+Partial fills are normal: a 0.010 ETH market order on futures produced 2 fills (0.003 + 0.007). Position events: PositionOpened → PositionChanged (on second fill) → PositionClosed (on close).

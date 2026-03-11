@@ -1,6 +1,6 @@
 # NautilusTrader Live Testing Status
 
-**Date**: 2026-03-10
+**Date**: 2026-03-12
 **Version**: nautilus_trader 1.224.0, Python 3.14.3
 **Test suite**: `tests/live_venue_tests/` + `nautilus-crypto-hft/examples/`
 
@@ -37,6 +37,9 @@
 | `TestDataProvider.audusd_ticks()` → `dp.read_csv_ticks()` | dev_environment.md | Method doesn't exist |
 | `cache.orders_filled()` → `cache.orders_closed()` | market_maker_backtest.py | AttributeError |
 | `get_avg_px_for_quantity(side, qty)` args reversed | order_book.md | Wrong arg order |
+| HMAC keys for exec WS API → Ed25519 required | SKILL.md, exchange_adapters.md, live_trading.md | `session.logon` rejects HMAC-SHA-256 |
+| Encrypted Ed25519 key → must be unencrypted PKCS#8 | SKILL.md, exchange_adapters.md | `-1022 invalid signature` with PBES2-encrypted key |
+| ETHUSDT futures min notional 5→20 USDT | SKILL.md | `-4164` on 0.005 ETH order |
 | MM backtest subscribed L2 book but loaded trade ticks (0 orders) | market_maker_backtest.py | Silent no-op, rewrote to use trade ticks |
 | Native signal API undocumented: `publish_signal`/`subscribe_signal`/`on_signal` | SKILL.md, actors_and_signals.md | Tested: 698 signals end-to-end |
 | `ParquetDataCatalog.data_types()` → `.list_data_types()` | SKILL.md, backtesting_and_simulation.md | AttributeError |
@@ -53,12 +56,48 @@
 
 | Venue | Key Env Var | Connect | Instruments | Data Stream | Orders | Issue |
 |-------|-----------|---------|-------------|-------------|--------|-------|
-| Binance Futures | `BINANCE_LINEAR_API_KEY` | OK (3s) | 1 loaded | 559 deltas, 9811 trades, 51696 quotes | N/A | Key lacks trading permissions |
-| Binance Spot | `BINANCE_SPOT_API_KEY` | OK (1s) | 1 loaded | Blocked by exec timeout | N/A | Exec client connects >20s, blocks strategy start |
+| Binance Futures | `BINANCE_SPOT_ED25519` | OK (5s) | 1 loaded | Trade ticks streaming | **LONG+CLOSE filled** | Full round trip: 0.010 ETH long+close @ 10x leverage |
+| Binance Spot | `BINANCE_SPOT_ED25519` | OK (5s) | 1 loaded | Trade ticks streaming | **BUY+SELL filled** | Full round trip: 0.005 ETH buy+sell, P&L +0.0011 USDT |
 | Bybit Linear | `BYBIT_PERP_API_KEY` | FAIL | FAIL | FAIL | N/A | IP-restricted to 87.121.50.19, blocks REST |
 | OKX Swap | `OKX_API_KEY` | OK | 1 loaded | 245 deltas, 2478 trades, 1639 quotes | No funds | WS private auth fails, but data + balances work |
 | dYdX v4 | `DYDX_PERP_WALLET_ADDRESS` | OK (1s) | 1 loaded | 5108 deltas, 1024 trades, 143 quotes | Rejected | Wallet not on-chain (account not found) |
 | Multi (BN+OKX) | Both | OK | 2 loaded | BN: 268d/1670t/11968q, OKX: 147d/657t/930q | N/A | Cross-venue book spread ~0bps |
+
+## Live Trade Results (Real Money)
+
+### Binance Spot — ETHUSDT (2026-03-12)
+
+| Phase | Result | Details |
+|-------|--------|---------|
+| Connection | OK (5s) | Ed25519 WS auth successful, reconciliation OK |
+| BUY 0.005 ETH | **FILLED** | Market order @ $2075.48, fill latency ~300ms |
+| SELL 0.005 ETH | **FILLED** | Market order @ $2075.69, fill latency ~300ms |
+| Round trip P&L | +0.0011 USDT | Before fees (~$0.02 total fees) |
+
+**Key findings**:
+- `key_type=BinanceKeyType.ED25519` required — HMAC rejected by WS API `session.logon`
+- Ed25519 private key must be **unencrypted** PKCS#8 (48 bytes). Encrypted PBES2 keys → `-1022 invalid signature`
+- `reconciliation=True, reconciliation_lookback_mins=10` works correctly
+- Market order fill latency ~300ms from strategy submit to `on_order_filled`
+- `TimeInForce.IOC` for spot market orders
+
+### Binance Futures — ETHUSDT-PERP (2026-03-12)
+
+| Phase | Result | Details |
+|-------|--------|---------|
+| Connection | OK (5s) | Ed25519 WS auth successful on futures too |
+| Set leverage | **OK** | `POST /fapi/v1/leverage` → 10x, maxNotionalValue=150M |
+| LONG 0.010 ETH | **FILLED** | 2 partial fills: 0.003 + 0.007 @ $2073.77, ~274ms |
+| CLOSE 0.010 ETH | **FILLED** | Market sell @ $2073.93, ~275ms |
+| Round trip P&L | +0.0016 USDT | Before fees (~$0.01 total fees) |
+
+**Key findings**:
+- ETHUSDT futures min notional = 20 USDT (spot = 5 USDT)
+- New futures accounts default to 1x leverage — must set via `POST /fapi/v1/leverage` before trading
+- `TimeInForce.GTC` for futures market orders (not IOC)
+- 15 USDT transferred spot→futures via `POST /sapi/v1/asset/transfer` with `type=MAIN_UMFUTURE`
+- Partial fills are normal: 0.010 order → 2 fills (0.003 + 0.007)
+- Position lifecycle: PositionOpened (0.003) → PositionChanged (0.010) → PositionClosed
 
 ## Offline Test Results
 
@@ -153,6 +192,17 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 - **Order attribute**: `order.side` (not `order.order_side`), events use `event.order_side`
 - **Bracket factory**: `order_factory.bracket()` tags: `['ENTRY']`, `['STOP_LOSS']`, `['TAKE_PROFIT']`
 - **Clock API**: `utc_now()` → pandas Timestamp, `timestamp_ns()` → int, `set_time_alert(override=)`
+- **Live Spot market order**: BUY 0.005 ETHUSDT @ $2075.48 → SELL @ $2075.69, P&L +0.0011 USDT (Binance Spot)
+- **Ed25519 WS API auth**: `BinanceKeyType.ED25519` with unencrypted PKCS#8 key works on Spot and Futures
+- **Reconciliation (live)**: `reconciliation=True, reconciliation_lookback_mins=10` on Binance Spot — verified
+- **Market order fill latency**: ~300ms from strategy submit to `on_order_filled` callback
+- **Internal USDT transfer**: Spot→Futures via `POST /sapi/v1/asset/transfer` with `type=MAIN_UMFUTURE`
+- **Futures min notional**: ETHUSDT-PERP requires 20 USDT notional (spot requires 5 USDT)
+- **Futures leverage via API**: `POST /fapi/v1/leverage` with `symbol=ETHUSDT&leverage=10` — verified
+- **Futures market order**: LONG 0.010 ETHUSDT-PERP → 2 partial fills (0.003+0.007) @ $2073.77 → CLOSE @ $2073.93
+- **Futures position lifecycle**: PositionOpened → PositionChanged (partial fills) → PositionClosed
+- **Limit order lifecycle**: submit → accept (~274ms) → modify price (~274ms) → cancel (~273ms) on Binance Futures
+- **modify_order (live)**: Works on Binance Futures — `PUT /fapi/v1/order` amends price in-place
 - **FundingRateUpdate**: Actor constructs and publishes via `publish_data`, Strategy receives via `subscribe_data`/`on_data`
 - **BinanceFuturesMarkPriceUpdate**: adapter emits via `@markPrice` WS, contains `funding_rate` (Decimal) + `next_funding_ns`
 - **OpenInterestData custom type**: `Data` subclass with `ts_event`/`ts_init` properties, publish/subscribe works
@@ -164,11 +214,12 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 
 ### Partially Tested
 
-- **Order submission**: flow works (`submit_order` called), but all venues rejected (account/key issues)
+- **Order submission**: **Spot WORKS** (BUY+SELL round trip on Binance). Futures rejected (margin insufficient at 1x leverage)
 - **ExecEngine routing**: confirmed error handling when exec client missing
-- **Account balances**: read on OKX (multi-asset) and dYdX (0 USDC)
-- **Reconciliation**: disabled for speed, never tested startup reconciliation
+- **Account balances**: read on OKX (multi-asset), dYdX (0 USDC), and Binance (20 USDT)
+- **Reconciliation**: **WORKS** on Binance Spot (`reconciliation=True, reconciliation_lookback_mins=10`)
 - **Bars**: subscribed but 0 received in short tests (1-MINUTE-LAST-EXTERNAL needs >60s run)
+- **Internal transfer**: Spot→Futures USDT transfer via REST API verified
 
 ### Not Tested — TODOs
 
@@ -209,15 +260,16 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 
 #### LIVE-TRADE — Needs funded account with trading permissions
 
-| TODO | What to test | API key needed | Permissions needed | Min deposit |
-|------|-------------|----------------|-------------------|-------------|
-| Full order lifecycle | submit→accept→fill on real venue | `BINANCE_SPOT_API_KEY` | **Enable Spot Trading** in API settings | ~$20 USDT |
-| Modify order (live) | Place limit → modify price/qty | `BINANCE_SPOT_API_KEY` | Spot Trading enabled | ~$20 USDT |
-| Cancel order (live) | Place limit far from market → cancel | `BINANCE_SPOT_API_KEY` | Spot Trading enabled | ~$20 USDT |
-| Bracket on live | `order_factory.bracket()` on futures | `BINANCE_LINEAR_API_KEY` | **Enable Futures Trading** + **Enable Futures API** | ~$50 USDT |
-| Reconciliation | `reconciliation=True`, restart node, verify state recovery | `BINANCE_SPOT_API_KEY` | Spot Trading enabled | ~$20 USDT |
-| Binance Spot exec timeout | Debug why exec client takes >20s to connect | `BINANCE_SPOT_API_KEY` | Spot Trading enabled | $0 (debug only) |
-| Bybit connectivity | Unblock IP or add test machine IP to whitelist | `BYBIT_PERP_API_KEY` | **Add current IP to whitelist** in Bybit API settings | $0 |
+| TODO | What to test | API key needed | Permissions needed | Min deposit | Status |
+|------|-------------|----------------|-------------------|-------------|--------|
+| ~~Full order lifecycle~~ | ~~submit→accept→fill~~ | `BINANCE_SPOT_ED25519` | Ed25519 + Spot Trading | ~$20 USDT | **DONE** ✓ |
+| ~~Modify order (live)~~ | ~~Place limit → modify price~~ | `BINANCE_SPOT_ED25519` | Futures 10x | ~$15 USDT | **DONE** ✓ |
+| ~~Cancel order (live)~~ | ~~Place limit → cancel~~ | `BINANCE_SPOT_ED25519` | Futures 10x | ~$15 USDT | **DONE** ✓ |
+| ~~Futures market order~~ | ~~Set leverage, market BUY+SELL~~ | `BINANCE_SPOT_ED25519` | 10x leverage set | ~$25 USDT | **DONE** ✓ |
+| Bracket on live | `order_factory.bracket()` on futures | `BINANCE_SPOT_ED25519` | Futures Trading | ~$50 USDT | TODO |
+| ~~Reconciliation~~ | ~~`reconciliation=True`, verify state~~ | `BINANCE_SPOT_ED25519` | Spot Trading enabled | ~$20 USDT | **DONE** ✓ |
+| ~~Binance Spot exec timeout~~ | ~~Debug exec client connect~~ | `BINANCE_SPOT_ED25519` | Ed25519 key | $0 | **FIXED** (was HMAC issue) |
+| Bybit connectivity | Unblock IP or add test machine IP | `BYBIT_PERP_API_KEY` | **Add current IP** | $0 | Blocked (IP) |
 
 #### INFRASTRUCTURE — Needs local services running
 
@@ -230,21 +282,27 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 
 ## Action Items (Ordered by Unlock Value)
 
-### 1. Fund Binance Spot — unlocks 6 live-trade tests
-- Deposit ~$20 USDT to Binance Spot wallet
-- In API Management: verify `BINANCE_SPOT_API_KEY` has **Spot Trading** enabled
-- The key already has read permissions (data collection works)
-- Test: buy 0.001 ETH market → verify `on_order_filled` fires
+### ~~1. Fund Binance Spot~~ — DONE ✓
+- ~~Deposit ~$20 USDT to Binance Spot wallet~~ — 20.26 USDT deposited
+- ~~Test: buy 0.001 ETH market → verify `on_order_filled` fires~~ — Full BUY+SELL round trip confirmed
+- Ed25519 API key created with all permissions (TRD_GRP_072)
+- Next: test limit orders, modify orders, cancel orders
+
+### ~~1. Fix Binance Futures leverage~~ — DONE ✓
+- ~~Set leverage to 10x via `POST /fapi/v1/leverage`~~ — done
+- ~~Retry ETHUSDT-PERP 0.010 market order~~ — Full LONG+CLOSE round trip confirmed
+- Next: test limit orders, bracket orders on futures
 
 ### 2. Fix Bybit IP restriction — unlocks 1 venue
 - Log into Bybit → API Management → edit `BYBIT_PERP_API_KEY`
 - Add current machine's IP (or set to unrestricted if testnet)
 - Current IP blocked: only `87.121.50.19` whitelisted
 
-### 3. Enable Binance Futures trading — unlocks bracket orders live
-- In Binance API settings for `BINANCE_LINEAR_API_KEY`: enable **Futures Trading**
-- Transfer ~$50 USDT to Futures wallet
-- Required for bracket/contingent order live testing
+### 3. Test Binance limit/modify/cancel — unlocks MM readiness
+- Place limit BUY far from market → verify `on_order_accepted`
+- Modify price → verify `on_order_updated`
+- Cancel → verify `on_order_canceled`
+- Requires: funded spot account (already done)
 
 ### 4. Start Redis — unlocks 2 infra tests
 - `docker run -d --name nautilus-redis -p 6379:6379 redis:7`
@@ -276,6 +334,11 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 - `catalog.query_first_timestamp(TradeTick)` returns None — must pass `identifier=instrument_id_str`
 - `order.side` not `order.order_side` (events use `event.order_side`) — mixing causes AttributeError
 - `OrderList.is_bracket()` is a method, not a property — calling without `()` returns bound method
+- Binance exec WS API `session.logon` rejects HMAC-SHA-256 — use `BinanceKeyType.ED25519`
+- Ed25519 private key must be unencrypted PKCS#8 (48 bytes base64). PBES2-encrypted keys → `-1022 invalid signature`
+- Futures + HMAC: adapter falls back to REST listenKey (works). Spot + HMAC: NO fallback, exec never connects
+- ETHUSDT Futures min notional = 20 USDT (not 5 like spot). Error: `-4164`
+- New Binance Futures accounts default to 1x leverage — error `-2019 Margin is insufficient`
 - `publish_signal(name='foo')` creates `SignalFoo` class — use `type(signal).__name__` to route in `on_signal`
 - `subscribe_signal()` with no name subscribes to ALL signals; `subscribe_signal(name='foo')` filters
 - Subscribing to data that doesn't exist (wrong type, missing instrument) → silent 0 data, ERROR log only

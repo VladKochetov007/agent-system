@@ -206,36 +206,9 @@ Subscriptions are adapter-dependent. Strategy has the methods, but not all adapt
 
 **Total throughput**: ~24,500 events/30s (~817/s) across 10 Binance Futures instruments.
 
-### REST-Only Data (OI, Funding History, Long/Short)
+### REST-Only Data (OI, Funding, Long/Short)
 
-Not available via subscription. Use `BinanceHttpClient` directly:
-
-```python
-from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
-from nautilus_trader.adapters.binance import BinanceAccountType
-from nautilus_trader.core.nautilus_pyo3 import HttpMethod
-import json
-
-client = get_cached_binance_http_client(
-    clock=clock, account_type=BinanceAccountType.USDT_FUTURES,
-    api_key=key, api_secret=secret,
-)
-# Open Interest
-oi = json.loads(await client.send_request(
-    HttpMethod.GET, '/fapi/v1/openInterest', {'symbol': 'BTCUSDT'}))
-# Funding Rate History
-fr = json.loads(await client.send_request(
-    HttpMethod.GET, '/fapi/v1/fundingRate', {'symbol': 'BTCUSDT', 'limit': '3'}))
-# Mark + Index Price
-mark = json.loads(await client.send_request(
-    HttpMethod.GET, '/fapi/v1/premiumIndex', {'symbol': 'BTCUSDT'}))
-# Long/Short Ratio
-ratio = json.loads(await client.send_request(
-    HttpMethod.GET, '/futures/data/topLongShortPositionRatio',
-    {'symbol': 'BTCUSDT', 'period': '5m', 'limit': '3'}))
-```
-
-`/fapi/v1/allForceOrders` (liquidations) is deprecated — returns 400.
+Not available via subscription — use `BinanceHttpClient` directly. See [exchange_adapters.md](references/exchange_adapters.md) for code examples. Endpoints: `/fapi/v1/openInterest`, `/fapi/v1/fundingRate`, `/fapi/v1/premiumIndex`, `/futures/data/topLongShortPositionRatio`. Liquidations endpoint deprecated (returns 400).
 
 ## Execution Methods
 
@@ -392,58 +365,15 @@ def on_bar(self, bar: Bar) -> None:
 
 **RSI range**: `[0.0, 1.0]`, not `[0, 100]`. Multiply by 100 if needed.
 
-## Signals (Native API — Preferred)
+## Signals (Native API)
 
-Simplest way to pass data between Actors and Strategies. No custom class needed.
-
-```python
-# Actor/Strategy publishes — name becomes class SignalMomentum, SignalEma, etc.
-self.publish_signal(name="momentum", value=42.5, ts_event=tick.ts_event)
-
-# Strategy/Actor subscribes
-self.subscribe_signal(name="momentum")  # specific signal
-self.subscribe_signal()                  # ALL signals
-
-# Handler — signal.value is the published value, type(signal).__name__ for routing
-def on_signal(self, signal) -> None:
-    momentum = signal.value  # float/dict/list — whatever was published
-    sig_type = type(signal).__name__  # "SignalMomentum"
-```
-
-For structured multi-field data, use custom `Data` subclass + `publish_data`/`subscribe_data` (see [actors_and_signals.md](references/actors_and_signals.md)).
+`publish_signal(name="momentum", value=42.5, ts_event=tick.ts_event)` → auto-generates `SignalMomentum` class. Subscribe: `subscribe_signal(name="momentum")` or `subscribe_signal()` for all. Handler: `on_signal(self, signal)` — `signal.value` is the value, `type(signal).__name__` for routing. Values must be int/float/str only (dict → KeyError). For structured data, use `Data` subclass + `publish_data` (see [actors_and_signals.md](references/actors_and_signals.md)).
 
 ## Actors (Verified)
 
-```python
-from nautilus_trader.common.actor import Actor  # NOT trading.actor
-from nautilus_trader.config import ActorConfig
-```
+`from nautilus_trader.common.actor import Actor` (NOT `trading.actor`). Actors are Strategies without order management — same lifecycle, data subscriptions, clock/timers. Use to separate signal computation from trading logic. Registration: `engine.add_actor()` for backtest, `node.trader.add_actor()` for live.
 
-Actors are Strategies without order management. Same lifecycle, same data subscriptions, same clock/timers. Use them to separate signal computation from trading logic.
-
-```python
-class EmaActor(Actor):
-    def on_start(self):
-        inst = self.cache.instruments()[0]
-        self.subscribe_trade_ticks(inst.id)
-    def on_trade_tick(self, tick):
-        self.ema.handle_trade_tick(tick)
-        if self.ema.initialized:
-            self.publish_signal(name="ema", value=self.ema.value, ts_event=tick.ts_event)
-
-# Registration: engine.add_actor(actor) for backtest, node.trader.add_actor(actor) for live
-```
-
-### Custom Data Types via Actor (Example)
-
-See `examples/binance_enrichment_actor.py` for a complete example demonstrating:
-- Custom `Data` subclass (`OpenInterestData`) with `ts_event`/`ts_init` properties
-- `publish_data`/`subscribe_data` with `DataType` + metadata for structured data
-- `queue_for_executor(coroutine)` for async HTTP from sync timer callbacks
-- `HttpClient` from `nautilus_trader.core.nautilus_pyo3` for REST polling
-- Subscribing to adapter-emitted custom data (`BinanceFuturesMarkPriceUpdate`)
-
-See [actors_and_signals.md](references/actors_and_signals.md) for full reference.
+Custom data: `Data` subclass + `publish_data`/`subscribe_data`, `queue_for_executor()` for async HTTP. See [actors_and_signals.md](references/actors_and_signals.md) and [binance_enrichment_actor.py](examples/binance_enrichment_actor.py).
 
 ## ParquetDataCatalog (Verified)
 
@@ -480,29 +410,39 @@ catalog.write_data(trades)
 
 **Anti-fingerprinting**: Randomize sizes (±5%), vary requote intervals, use `modify_order` (not cancel+replace).
 
-## Live TradingNode — Minimal
+## Live TradingNode
 
 ```python
 from nautilus_trader.adapters.binance import (
-    BinanceAccountType, BinanceDataClientConfig,
+    BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
     BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
+from nautilus_trader.adapters.binance.common.enums import BinanceKeyType
 
+# key_type=BinanceKeyType.ED25519 REQUIRED on both data and exec configs
+# HMAC rejected by exec WS API session.logon — Ed25519 only
 node = TradingNode(config=TradingNodeConfig(
-    timeout_connection=20,
-    data_clients={"BINANCE": BinanceDataClientConfig(
-        api_key=key, api_secret=secret,
-        account_type=BinanceAccountType.USDT_FUTURES,  # enum, NOT string
+    timeout_connection=30,
+    data_clients={BINANCE: BinanceDataClientConfig(
+        api_key=key, api_secret=secret, key_type=BinanceKeyType.ED25519,
+        account_type=BinanceAccountType.USDT_FUTURES,
         instrument_provider=InstrumentProviderConfig(
-            load_all=False, load_ids=frozenset({"BTCUSDT-PERP.BINANCE"}),
+            load_all=False, load_ids=frozenset({InstrumentId.from_str("BTCUSDT-PERP.BINANCE")}),
         ),
     )},
+    exec_clients={BINANCE: BinanceExecClientConfig(
+        api_key=key, api_secret=secret, key_type=BinanceKeyType.ED25519,
+        account_type=BinanceAccountType.USDT_FUTURES,
+    )},
 ))
-node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
+node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 node.trader.add_strategy(my_strategy)
 node.build()
 node.run()  # blocks until SIGINT
 ```
+
+Ed25519 key must be unencrypted PKCS#8 (encrypted → `-1022`). ETHUSDT min notional: Spot=5, Futures=20 USDT. See [live_trading.md](references/live_trading.md).
 
 ## Mental Model — How It Actually Works
 
@@ -551,6 +491,8 @@ These are common hallucinations. None exist in v1.224.0:
 | `subscribe_funding_rates()` on Binance | NotImplementedError — use BinanceEnrichmentActor pattern |
 | OI WebSocket stream on Binance | Does not exist — must poll REST `/fapi/v1/openInterest` on timer |
 | `publish_signal(value=dict(...))` | KeyError — signal values must be int, float, or str only |
+| HMAC keys for Binance exec WS API | `session.logon` rejects HMAC — use `BinanceKeyType.ED25519` |
+| Encrypted Ed25519 private key | `-1022 invalid signature` — must be unencrypted PKCS#8 |
 | `subscribe_order_book_depth()` on Binance | NotImplementedError — use `subscribe_order_book_deltas()` |
 | `subscribe_instrument_status()` on Binance | NotImplementedError |
 | `on_timer()` as Strategy callback | Use `clock.set_timer(callback=handler)` |
@@ -561,48 +503,16 @@ These are common hallucinations. None exist in v1.224.0:
 | Indicator values are NaN/zero before `initialized` | Partial values (e.g. SMA(20) after 5 bars = avg of 5) — wrong, not missing |
 | `request_bars(bar_type)` with one arg | Requires `start` datetime: `request_bars(bar_type, start=datetime(...))` |
 
-## Performance Checklist
+## References
 
-- [ ] `modify_order` as primary MM requote method (not cancel+replace)?
-- [ ] L2_MBP book type (not L3 which doesn't exist on crypto)?
-- [ ] `RecordFlag.F_LAST` on final delta in every batch?
-- [ ] `instrument.make_price()` / `make_qty()` for precision?
-- [ ] Spread > breakeven (maker + taker fee)?
-- [ ] Microprice (not simple mid) for fairer quotes?
-- [ ] ts_event from exchange timestamps (not local clock)?
-- [ ] Reconciliation methods implemented in all exec clients?
-- [ ] Memory purge configured for long-running live sessions?
-- [ ] Rust core for adapter HTTP/WS parsing in production?
+Load these for detailed coverage of specific topics:
 
-## Reference Navigator
-
-| Topic | File | When to Load |
-|-------|------|--------------|
-| Adverse selection, microprice, VPIN, fee optimization | [microstructure.md](references/microstructure.md) | Building MM or analyzing fill quality |
-| Order book processing, delta protocol, own order book | [order_book.md](references/order_book.md) | Book-based strategies, adapter data client |
-| Market making patterns, A-S model, spread methods | [market_making.md](references/market_making.md) | MM strategy development |
-| BacktestEngine, BacktestNode, fill/fee/latency models | [backtesting_and_simulation.md](references/backtesting_and_simulation.md) | Backtesting and simulation setup |
-| Order state machine, risk engine, exec algorithms | [execution_and_oms.md](references/execution_and_oms.md) | Execution flow, OMS internals |
-| Mark price, funding, liquidation, circuit breakers | [derivatives.md](references/derivatives.md) | Perps/futures trading |
-| Binance, Bybit, dYdX, OKX, Tardis, Databento | [exchange_adapters.md](references/exchange_adapters.md) | Venue-specific configuration |
-| Python LiveDataClient, LiveExecutionClient | [adapter_development_python.md](references/adapter_development_python.md) | Building Python adapters |
-| Rust crate structure, PyO3, HTTP/WS clients | [adapter_development_rust.md](references/adapter_development_rust.md) | Building Rust adapters |
-| TradingNode, persistence, reconciliation, deployment | [live_trading.md](references/live_trading.md) | Live trading operations |
-| Timers, alerts, scheduling, clock API | [clock_and_timers.md](references/clock_and_timers.md) | Any timer/scheduling logic |
-| Actor lifecycle, signals, custom data pipeline | [actors_and_signals.md](references/actors_and_signals.md) | Signal separation, data enrichment |
-| Graceful shutdown, error recovery, production ops | [operational_patterns.md](references/operational_patterns.md) | Production live trading |
-| Build system, testing, CI/CD, FFI contract | [dev_environment.md](references/dev_environment.md) | NautilusTrader development |
+- **Trading**: [market_making.md](references/market_making.md), [execution_and_oms.md](references/execution_and_oms.md), [derivatives.md](references/derivatives.md)
+- **Data**: [order_book.md](references/order_book.md), [microstructure.md](references/microstructure.md), [actors_and_signals.md](references/actors_and_signals.md)
+- **Infrastructure**: [live_trading.md](references/live_trading.md), [backtesting_and_simulation.md](references/backtesting_and_simulation.md), [clock_and_timers.md](references/clock_and_timers.md)
+- **Venues**: [exchange_adapters.md](references/exchange_adapters.md), [operational_patterns.md](references/operational_patterns.md)
+- **Development**: [adapter_development_python.md](references/adapter_development_python.md), [adapter_development_rust.md](references/adapter_development_rust.md), [dev_environment.md](references/dev_environment.md)
 
 ## Runnable Examples
 
-| Example | File | Purpose |
-|---------|------|---------|
-| MM Backtest | [market_maker_backtest.py](examples/market_maker_backtest.py) | L2 backtest with TestInstrumentProvider, runs out of the box |
-| Spread Capture Live | [spread_capture_live.py](examples/spread_capture_live.py) | TradingNode setup for live MM (needs API keys only) |
-| Custom Adapter | [custom_adapter_minimal.py](examples/custom_adapter_minimal.py) | Combined data+exec adapter skeleton (~100 lines) |
-| EMA Crossover | [ema_crossover_backtest.py](examples/ema_crossover_backtest.py) | Signal-based strategy with EMA indicators |
-| Bracket Orders | [bracket_order_backtest.py](examples/bracket_order_backtest.py) | OTO bracket (entry + SL + TP) with order_factory.bracket() |
-| Signal Pipeline | [signal_pipeline_backtest.py](examples/signal_pipeline_backtest.py) | Actor→Strategy signal flow with publish_signal/on_signal |
-| Binance Enrichment | [binance_enrichment_actor.py](examples/binance_enrichment_actor.py) | Funding rates (WS) + Open Interest (REST) enrichment actor |
-| Enrichment Test | [test_enrichment_actor_backtest.py](examples/test_enrichment_actor_backtest.py) | Backtest validation: mock adapter → enrichment → strategy |
-| Data Collection | tests/live_venue_tests/test_binance_data_collection.py | 10-instrument data collector with catalog save |
+All in `examples/`: [market_maker_backtest.py](examples/market_maker_backtest.py) (L2 MM), [spread_capture_live.py](examples/spread_capture_live.py) (live MM), [custom_adapter_minimal.py](examples/custom_adapter_minimal.py) (adapter skeleton), [ema_crossover_backtest.py](examples/ema_crossover_backtest.py), [bracket_order_backtest.py](examples/bracket_order_backtest.py), [signal_pipeline_backtest.py](examples/signal_pipeline_backtest.py), [binance_enrichment_actor.py](examples/binance_enrichment_actor.py) (OI+funding).

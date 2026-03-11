@@ -13,19 +13,32 @@ from nautilus_trader.adapters.binance import (
     BINANCE, BinanceAccountType, BinanceDataClientConfig, BinanceExecClientConfig,
     BinanceLiveDataClientFactory, BinanceLiveExecClientFactory,
 )
+from nautilus_trader.adapters.binance.common.enums import BinanceKeyType
 from nautilus_trader.config import InstrumentProviderConfig
 
 data_config = BinanceDataClientConfig(
     api_key="...", api_secret="...",
+    key_type=BinanceKeyType.ED25519,  # REQUIRED for exec WS API (HMAC rejected)
     account_type=BinanceAccountType.USDT_FUTURES,  # note: USDT_FUTURES (with S)
     instrument_provider=InstrumentProviderConfig(load_all=True),
 )
 
 exec_config = BinanceExecClientConfig(
     api_key="...", api_secret="...",
+    key_type=BinanceKeyType.ED25519,
     account_type=BinanceAccountType.USDT_FUTURES,
 )
 ```
+
+### Key Type Requirements (Verified with Real Trades)
+
+**Ed25519 keys are mandatory** for the exec client WS API. `session.logon` rejects HMAC-SHA-256.
+
+- Futures + HMAC: adapter falls back to REST listenKey (works but no WS order API)
+- Spot + HMAC: NO fallback — exec client never connects
+- Ed25519: works on both Spot and Futures (verified with real money)
+- `BinanceKeyType` enum: `HMAC`, `RSA`, `ED25519` from `nautilus_trader.adapters.binance.common.enums`
+- Private key must be **unencrypted** PKCS#8 (48 bytes base64). Encrypted keys → `-1022 invalid signature`
 
 ### Data Types — What Actually Works (v1.224.0 tested)
 
