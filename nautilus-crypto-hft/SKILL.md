@@ -204,6 +204,10 @@ Subscriptions are adapter-dependent. Strategy has the methods, but not all adapt
 | `subscribe_instrument_status` | **SOME** | `on_instrument_status` | Not on all adapters |
 | `subscribe_data` | **YES** | `on_data` | Custom data via MessageBus (actors, signals) |
 
+**Missing subscriptions that your strategy needs?** If a subscription method raises `NotImplementedError` but the data is critical for your strategy, you have two options:
+1. **Build an Actor** that polls the exchange REST API on a timer and publishes via `publish_data()` — see [binance_enrichment_actor.py](examples/binance_enrichment_actor.py) for a working example
+2. **Adjust your strategy** to work without that data type, or use an alternative (e.g. mark prices include funding info on some adapters)
+
 ### REST-Only Data (OI, Funding, Long/Short)
 
 Some data types are not available via subscription on any adapter — use the adapter's HTTP client directly. See [exchange_adapters.md](references/exchange_adapters.md) for per-venue code examples and endpoints.
@@ -212,12 +216,14 @@ Some data types are not available via subscription on any adapter — use the ad
 
 ```python
 self.submit_order(order)           # new order to venue
-self.modify_order(order, quantity, price, trigger_price)  # amend in-place (preferred)
+self.modify_order(order, quantity, price, trigger_price)  # amend in-place
 self.cancel_order(order)           # cancel single
 self.cancel_all_orders(instrument_id)  # cancel all for instrument
 self.close_position(position)      # market close
 self.close_all_positions(instrument_id)
 ```
+
+**`modify_order` is not supported on all exchanges** (e.g. dYdX). If your strategy relies on it and the target venue doesn't support it, use cancel + new order instead. Check [exchange_adapters.md](references/exchange_adapters.md) for the support matrix.
 
 ## Cache API (Verified)
 

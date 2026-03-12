@@ -286,9 +286,10 @@ Authentication method and key type vary by exchange. Check the adapter's config 
 | dYdX | Cosmos wallet | `wallet_address`, `private_key` | On-chain transactions |
 
 **How to check for your exchange**:
-1. Look at the adapter's `*ExecClientConfig` class for auth-related fields
-2. Check the NautilusTrader docs for your adapter: `https://nautilustrader.io/docs/nightly/integrations/<exchange>/`
-3. Some exchanges require encrypted key formats, others reject them — test on testnet first
+1. Check the NautilusTrader docs for your adapter: `https://nautilustrader.io/docs/nightly/integrations/<exchange>/`
+2. Check the official exchange API documentation for supported key types
+3. Look at the adapter's `*ExecClientConfig` class for auth-related fields
+4. Test on testnet first — auth errors are often cryptic and hard to debug
 
 **General rule**: If an adapter has a `key_type` field, set it explicitly. Ed25519 private keys must be unencrypted PKCS#8 format. Encrypted keys typically fail at signing.
 
@@ -306,6 +307,8 @@ instrument.taker_fee       # taker fee rate
 ```
 
 Configure leverage and internal transfers via each exchange's own REST API — these are not managed by NautilusTrader.
+
+**Fee verification**: `instrument.maker_fee` / `instrument.taker_fee` are loaded from the exchange, but we don't know if every adapter populates them accurately. Verify against your exchange dashboard after first connection. There are many ways to cross-check — runtime inspection, REST API queries, or comparing fill reports against expected fees.
 
 ## Order Lifecycle
 

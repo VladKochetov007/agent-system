@@ -340,7 +340,7 @@ deltas = wrangler.process(df)
 | dYdX | **No** | Cancel + replace only |
 | OKX | Yes | Cancel + replace |
 
-For MM strategies: prefer modify_order where supported. On dYdX, cancel+replace is the only option.
+If your strategy uses `modify_order` and the target exchange doesn't support it, use cancel + new order instead. The adapter will not auto-fallback — it will raise an error or reject the command.
 
 ## Common Patterns
 
