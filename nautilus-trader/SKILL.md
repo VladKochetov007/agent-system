@@ -223,7 +223,7 @@ self.close_position(position)      # market close
 self.close_all_positions(instrument_id)
 ```
 
-**`modify_order` is not supported on all exchanges** (e.g. dYdX). If your strategy relies on it and the target venue doesn't support it, use cancel + new order instead. Check [exchange_adapters.md](references/exchange_adapters.md) for the support matrix.
+**`modify_order` is not supported on all exchanges/account types**. If your strategy relies on it, verify support for your specific venue and account type. Use cancel + new order as fallback. Check [exchange_adapters.md](references/exchange_adapters.md) for the support matrix.
 
 ## Cache API (Verified)
 

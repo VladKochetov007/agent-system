@@ -286,12 +286,14 @@ Liquidations endpoint (`/fapi/v1/allForceOrders`) deprecated — returns 400.
 - ~~Deposit ~$20 USDT to Binance Spot wallet~~ — 20.26 USDT deposited
 - ~~Test: buy 0.001 ETH market → verify `on_order_filled` fires~~ — Full BUY+SELL round trip confirmed
 - Ed25519 API key created with all permissions (TRD_GRP_072)
-- Next: test limit orders, modify orders, cancel orders
+- ~~Limit order place + cancel~~ — **DONE** ✓ (2026-03-12)
+- ~~modify_order on Spot~~ — **NOT SUPPORTED** by adapter ("only USDT_FUTURES/COIN_FUTURES")
 
 ### ~~1. Fix Binance Futures leverage~~ — DONE ✓
 - ~~Set leverage to 10x via `POST /fapi/v1/leverage`~~ — done
 - ~~Retry ETHUSDT-PERP 0.010 market order~~ — Full LONG+CLOSE round trip confirmed
-- Next: test limit orders, bracket orders on futures
+- ~~Limit order place → modify → cancel~~ — **DONE** ✓ (2026-03-12, price 2019.92→2009.82)
+- Next: test bracket orders on futures
 
 ### 2. Fix Bybit IP restriction — unlocks 1 venue
 - Log into Bybit → API Management → edit `BYBIT_PERP_API_KEY`

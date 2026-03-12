@@ -11,7 +11,7 @@ Every exchange adapter has its own configuration, authentication, data availabil
 | Symbology | Different suffixes, delimiters, contract naming per venue |
 | Authentication | Ed25519, HMAC, wallet keys, passphrases — check adapter config |
 | Data subscriptions | Not all subscription types implemented on all adapters |
-| `modify_order` | Supported on most — **not dYdX** (cancel+replace only) |
+| `modify_order` | Supported on most — **not dYdX, not Binance Spot** (cancel+replace only) |
 | Rate limits | Weight-based (Binance), per-endpoint (Bybit), per-block (dYdX) |
 | Order book resync | Different sequence protocols per venue (lastUpdateId, crossSequence, etc.) |
 | REST data endpoints | Different paths, response formats, and available data types |
@@ -335,12 +335,15 @@ deltas = wrangler.process(df)
 
 | Venue | modify_order | Fallback |
 |-------|-------------|----------|
-| Binance | Yes (REST amend) | Cancel + replace |
+| Binance Futures | Yes (`PUT /fapi/v1/order`) | Cancel + replace |
+| Binance Spot | **No** (adapter rejects) | Cancel + replace only |
 | Bybit | Yes (REST/WS) | Cancel + replace |
 | dYdX | **No** | Cancel + replace only |
 | OKX | Yes | Cancel + replace |
 
-If your strategy uses `modify_order` and the target exchange doesn't support it, use cancel + new order instead. The adapter will not auto-fallback — it will raise an error or reject the command.
+**Binance Spot limitation** (verified): The adapter explicitly rejects `modify_order` on Spot — "only supported for USDT_FUTURES and COIN_FUTURES account types". Use cancel + new order on Spot.
+
+If your strategy uses `modify_order` and the target exchange/account type doesn't support it, use cancel + new order instead. The adapter will not auto-fallback — it will error.
 
 ## Common Patterns
 

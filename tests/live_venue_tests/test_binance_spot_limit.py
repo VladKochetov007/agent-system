@@ -1,7 +1,7 @@
 """
 Live Binance Spot limit order test: place → modify → cancel.
-Validates order lifecycle: submit → accept → modify → cancel.
-No fills expected — limit price placed far from market.
+Validates order lifecycle on SPOT account.
+No fills expected — limit price placed 2% below market.
 """
 
 import os
@@ -30,17 +30,17 @@ from nautilus_trader.trading.strategy import Strategy
 
 from datetime import timedelta
 
-INSTRUMENT = InstrumentId.from_str("ETHUSDT-PERP.BINANCE")
-TRADE_QTY = Decimal("0.010")  # min for futures (20 USDT notional), 5% below market to avoid fill
+INSTRUMENT = InstrumentId.from_str("ETHUSDT.BINANCE")
+TRADE_QTY = Decimal("0.0026")  # ~$5.10 notional at 2% below market, fits within ~$5.25 spot balance
 
 
-class LimitTestConfig(StrategyConfig, frozen=True):
+class SpotLimitConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     trade_qty: Decimal = TRADE_QTY
 
 
-class LimitTestStrategy(Strategy):
-    def __init__(self, config: LimitTestConfig) -> None:
+class SpotLimitStrategy(Strategy):
+    def __init__(self, config: SpotLimitConfig) -> None:
         super().__init__(config)
         self.instrument = None
         self.limit_order = None
@@ -69,20 +69,23 @@ class LimitTestStrategy(Strategy):
         )
 
     def _submit_limit(self, event) -> None:
-        # Place BUY limit 5% below best ask — should never fill
-        book = self.cache.order_book(self.config.instrument_id)
         quotes = self.cache.quote_ticks(self.config.instrument_id)
         if quotes:
             best_ask = float(quotes[0].ask_price)
-        elif book and book.best_ask_price():
-            best_ask = float(book.best_ask_price())
         else:
-            self.log.error("No market data to determine price")
-            return
+            book = self.cache.order_book(self.config.instrument_id)
+            if book and book.best_ask_price():
+                best_ask = float(book.best_ask_price())
+            else:
+                self.log.error("No market data to determine price")
+                return
 
-        # 1% below market — stays above 20 USDT min notional while avoiding fill
-        limit_price = self.instrument.make_price(Decimal(str(best_ask * 0.99)))
+        # 2% below market — far enough to not fill
+        limit_price = self.instrument.make_price(Decimal(str(best_ask * 0.98)))
         qty = self.instrument.make_qty(self.config.trade_qty)
+
+        notional = float(limit_price) * float(qty)
+        self.log.info(f"Notional check: {notional:.2f} USDT (min=5, balance=~5.25)")
 
         self.limit_order = self.order_factory.limit(
             instrument_id=self.config.instrument_id,
@@ -110,9 +113,8 @@ class LimitTestStrategy(Strategy):
             self.log.warning("No open order to modify")
             return
 
-        # Move price 0.5% lower (stay above 20 USDT min notional)
         old_price = float(self.limit_order.price)
-        new_price = self.instrument.make_price(Decimal(str(old_price * 0.995)))
+        new_price = self.instrument.make_price(Decimal(str(old_price * 0.99)))
         self.modify_order(self.limit_order, price=new_price)
         self.log.info(f"MODIFY submitted: {old_price:.2f} → {new_price}")
 
@@ -142,9 +144,16 @@ class LimitTestStrategy(Strategy):
             callback=self._kill,
         )
 
+    def on_order_denied(self, event) -> None:
+        self.log.error(f"ORDER DENIED: {event.reason}")
+        self.clock.set_time_alert(
+            name="shutdown_denied",
+            alert_time=self.clock.utc_now() + timedelta(seconds=2),
+            callback=self._kill,
+        )
+
     def on_order_modify_rejected(self, event) -> None:
         self.log.error(f"MODIFY REJECTED: {event.reason}")
-        # Still try cancel
         self.clock.set_time_alert(
             name="cancel_after_reject",
             alert_time=self.clock.utc_now() + timedelta(seconds=2),
@@ -183,30 +192,27 @@ def main():
         print("ERROR: BINANCE_SPOT_ED25519 / BINANCE_SPOT_ED25519_SECRET not set")
         return
 
-    key_type = BinanceKeyType.ED25519
-
     provider = InstrumentProviderConfig(load_all=False, load_ids=frozenset({INSTRUMENT}))
 
     config = TradingNodeConfig(
-        trader_id="LIMIT-TEST-001",
+        trader_id="SPOT-LIMIT-001",
         logging=LoggingConfig(log_level="INFO"),
         exec_engine=LiveExecEngineConfig(reconciliation=True, reconciliation_lookback_mins=10),
         data_clients={
             BINANCE: BinanceDataClientConfig(
                 api_key=api_key,
                 api_secret=api_secret,
-                key_type=key_type,
-                account_type=BinanceAccountType.USDT_FUTURES,
+                key_type=BinanceKeyType.ED25519,
+                account_type=BinanceAccountType.SPOT,
                 instrument_provider=provider,
             ),
         },
         exec_clients={
-
             BINANCE: BinanceExecClientConfig(
                 api_key=api_key,
                 api_secret=api_secret,
-                key_type=key_type,
-                account_type=BinanceAccountType.USDT_FUTURES,
+                key_type=BinanceKeyType.ED25519,
+                account_type=BinanceAccountType.SPOT,
                 instrument_provider=provider,
             ),
         },
@@ -221,12 +227,13 @@ def main():
     node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
     node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 
-    strategy = LimitTestStrategy(LimitTestConfig(instrument_id=INSTRUMENT, trade_qty=TRADE_QTY))
+    strategy = SpotLimitStrategy(SpotLimitConfig(instrument_id=INSTRUMENT, trade_qty=TRADE_QTY))
     node.trader.add_strategy(strategy)
     node.build()
 
-    print(f"Starting limit order test: place → modify → cancel")
-    print(f"Qty: {TRADE_QTY} ETHUSDT-PERP, price 5% below market (should NOT fill)")
+    print(f"Starting Spot limit order test: place → modify → cancel")
+    print(f"Qty: {TRADE_QTY} ETHUSDT, price 2% below market (should NOT fill)")
+    print(f"Spot balance: ~5.25 USDT")
     print("=" * 60)
 
     try:
