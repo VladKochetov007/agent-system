@@ -293,6 +293,18 @@ When a fill takes position through zero to opposite side:
 2. New position opened with remaining fill qty
 3. Both events generated atomically
 
+## Portfolio API
+
+```python
+account = self.portfolio.account(Venue("BINANCE"))
+account.balance_total(Currency.from_str("USDT"))
+account.balance_free(Currency.from_str("USDT"))
+account.balance_locked(Currency.from_str("USDT"))
+self.portfolio.is_flat(instrument_id)
+self.portfolio.net_position(instrument_id)
+self.portfolio.unrealized_pnls(Venue("BINANCE"))
+```
+
 ## Reconciliation
 
 ### Purpose

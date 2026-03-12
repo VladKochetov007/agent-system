@@ -244,6 +244,32 @@ engine.add_venue(
 
 Orders can be rejected or modified during the latency window if market moves.
 
+## Indicators
+
+```python
+from nautilus_trader.indicators import (
+    ExponentialMovingAverage,    # EMA(period)
+    SimpleMovingAverage,         # SMA(period)
+    RelativeStrengthIndex,       # RSI(period) — value in [0, 1] not [0, 100]
+    BollingerBands,              # BB(period, k) — k is MANDATORY (e.g. 2.0)
+    MovingAverageConvergenceDivergence,  # MACD(fast, slow, ma_type) — NOT (fast, slow, signal)
+    AverageTrueRange,            # ATR(period)
+    MovingAverageType,           # EXPONENTIAL, SIMPLE, etc.
+)
+
+# Registration: auto-update indicators on each bar
+bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-INTERNAL")
+self.register_indicator_for_bars(bar_type, self.ema)
+self.subscribe_bars(bar_type)
+
+# Guard: indicators_initialized() returns True only when ALL registered indicators ready
+def on_bar(self, bar: Bar) -> None:
+    if not self.indicators_initialized():
+        return  # warmup period — partial values (not NaN), silently wrong
+```
+
+Import path: `from nautilus_trader.indicators import X` (NOT `from nautilus_trader.indicators.ema`).
+
 ## Bar Timestamp Convention (ts_init_delta)
 
 Bars must use **closing time** for `ts_init` to prevent look-ahead bias.
@@ -274,7 +300,12 @@ catalog = ParquetDataCatalog("/path/to/catalog")
 
 # Write instruments first, then data
 catalog.write_data([instrument])  # must be a list
-catalog.write_data(trade_ticks)   # list of TradeTick/QuoteTick/etc.
+catalog.write_data(trade_ticks)   # list of TradeTick/QuoteTick/etc. — MUST be sorted by ts_init
+
+# Live cache data is NOT time-sorted — sort before writing:
+# trades = list(cache.trade_ticks(inst_id))
+# trades.sort(key=lambda x: x.ts_init)
+# catalog.write_data(trades)
 
 # Read back — typed methods (preferred)
 instruments = catalog.instruments()
