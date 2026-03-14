@@ -381,3 +381,14 @@ Key advantage: L3 (MBO) data with individual order-level events, which isn't ava
 | `TRADES` | Time & sales |
 | `OHLCV_*` | Bars at various intervals |
 | `DEFINITION` | Instrument definitions |
+
+## Anti-Hallucination Notes
+
+| Hallucination | Reality |
+|--------------|---------|
+| `Equity(..., max_price=, min_price=)` | Constructor rejects these kwargs — properties exist but return None |
+| `FuturesContract(..., size_precision=, size_increment=)` | Hardcoded to 0/1 in Cython |
+| `MarketStatusAction.RESUME` | Does not exist — use `TRADING` to detect resumption |
+| HALT/PAUSE/SUSPEND differ in behavior | Functionally equivalent in v1.224.0 — matching engine doesn't differentiate |
+| `InstrumentStatus` stops order flow | Does NOT automatically stop — strategy must react manually |
+| `use_regular_trading_hours` affects ticks | Only affects bar data — tick data unaffected |

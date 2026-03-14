@@ -276,3 +276,13 @@ def _should_quote(self) -> bool:
         return False
     return True
 ```
+
+## Anti-Hallucination Notes
+
+| Hallucination | Reality |
+|--------------|---------|
+| `modify_order` works on all venues | Not dYdX, Binance Spot, Polymarket — adapter errors |
+| `book.midpoint()` returns float | Returns `Price` object — cast: `float(book.midpoint())` |
+| `pos.signed_qty` is Decimal | Returns float — wrap: `Decimal(str(pos.signed_qty))` |
+| Spread < breakeven is profitable | Must verify `half_spread * 2 > maker_fee + taker_fee` |
+| Backtest MM PnL = live PnL | Expect 30-50% of backtest PnL in live (adverse selection) |

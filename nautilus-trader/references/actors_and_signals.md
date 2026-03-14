@@ -277,3 +277,14 @@ class RestPollerActor(Actor):
 
 > For a full working example with `OpenInterestData` and `FundingRateUpdate`,
 > see `examples/binance_enrichment_actor.py`.
+
+## Anti-Hallucination Notes
+
+| Hallucination | Reality |
+|--------------|---------|
+| `from nautilus_trader.trading.actor import Actor` | `from nautilus_trader.common.actor import Actor` |
+| `publish_signal(value=dict(...))` | Values must be int, float, or str — dict causes KeyError |
+| `on_signal` receives typed fields | Single scalar value only — use custom Data for multi-field |
+| `Actor.subscribe_trade_ticks()` in `__init__` | Must subscribe in `on_start()` — cache not available in `__init__` |
+| Custom `Data` without `ts_event`/`ts_init` | Both required as properties — use `_ts_event`/`_ts_init` backing fields |
+| `queue_for_executor` is async | It schedules an async coroutine from a sync context — the callback itself is sync |

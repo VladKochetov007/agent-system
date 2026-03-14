@@ -124,7 +124,7 @@ def on_bar(self, bar: Bar) -> None:
         return  # CRITICAL — values are WRONG before warmup, not NaN
 ```
 
-SMA/EMA/RSI produce **partial values** before warmup — not NaN, not zero, just wrong numbers. See [backtesting_and_simulation.md](references/backtesting_and_simulation.md) for indicator imports and registration.
+SMA/EMA/RSI produce **partial values** before warmup — not NaN, not zero, just wrong numbers. See [backtesting.md](references/backtesting.md) for indicator imports and registration.
 
 ## Data Subscriptions
 
@@ -163,7 +163,7 @@ self.close_all_positions(instrument_id)
 **OMS**: NETTING = one position per instrument (standard crypto). HEDGING = multiple per instrument.
 `BUY 1.0 → LONG 1.0 → BUY 0.5 → LONG 1.5 → SELL 2.0 → SHORT 0.5`
 
-Bracket orders: `order_factory.bracket(instrument_id, order_side, quantity, tp_price, sl_trigger_price)` → `submit_order_list(bracket)`. See [execution_and_oms.md](references/execution_and_oms.md).
+Bracket orders: `order_factory.bracket(instrument_id, order_side, quantity, tp_price, sl_trigger_price)` → `submit_order_list(bracket)`. See [execution.md](references/execution.md).
 
 ## Verified API
 
@@ -213,7 +213,7 @@ self.portfolio.net_position(instrument_id)
 
 **Event flow**: Venue WS → DataClient → DataEngine (buffers until F_LAST) → MessageBus → Strategy callbacks. Single-threaded — every callback must return fast. Never `time.sleep()`.
 
-**Clock**: `set_timer("name", interval=timedelta(...), callback=fn)` for recurring, `set_time_alert("name", time, callback=fn)` for one-shot. No `on_timer()` method. See [clock_and_timers.md](references/clock_and_timers.md).
+**Clock**: `set_timer("name", interval=timedelta(...), callback=fn)` for recurring, `set_time_alert("name", time, callback=fn)` for one-shot. No `on_timer()` method. See [operations.md](references/operations.md).
 
 **Instruments**: `load_ids=frozenset({...})` for fast startup. `load_all=True` takes minutes. Use adapter-specific enums for account types.
 
@@ -244,11 +244,11 @@ These do NOT exist in v1.224.0:
 | `book.filtered_view()` | Use `cache.own_order_book()` |
 | `book.get_avg_px_qty_for_exposure()` | Use `get_avg_px_for_quantity()` + `get_quantity_for_price()` |
 | `level.count` / `book.count` | `book.update_count` |
+| `BookOrder(price=, size=, side=)` | 4 positional args: `BookOrder(OrderSide.BUY, Price, Quantity, order_id=0)`. Import from `model.data`, NOT `model.book` |
 | `GenericDataWrangler` | TradeTickDataWrangler, QuoteTickDataWrangler, OrderBookDeltaDataWrangler, BarDataWrangler |
 | `catalog.data_types()` | `catalog.list_data_types()` |
-| `BacktestEngineConfig` from `backtest.config` | from `nautilus_trader.backtest.engine` |
+| `BacktestEngineConfig` from `nautilus_trader.config` | from `nautilus_trader.backtest.engine` or `nautilus_trader.backtest.config` |
 | `FillModel(prob_fill_on_stop=...)` | Only: prob_fill_on_limit, prob_slippage, random_seed |
-| `BookOrder(price=, size=, side=)` | Missing `order_id`: `BookOrder(side=, price=, size=, order_id=0)` |
 | `LoggingConfig(log_file_path=)` | `log_directory=` |
 | `cache.orders_filled()` | `cache.orders_closed()` |
 | `pos.signed_qty / Decimal(...)` | TypeError: returns float — `Decimal(str(pos.signed_qty))` |
@@ -261,33 +261,37 @@ These do NOT exist in v1.224.0:
 | `on_timer()` as callback | `clock.set_timer(callback=handler)` |
 | `order.order_side` | `order.side` — events use `event.order_side` |
 | `request_bars(bar_type)` one arg | Requires `start`: `request_bars(bar_type, start=datetime(...))` |
-| `subscribe_option_greeks()` | Does not exist — use `GreeksCalculator` manually |
-| `subscribe_option_chain()` | Does not exist — load via `InstrumentProviderConfig` |
 | `GreeksCalculator(cache, clock, logger)` | Only 2 args: `GreeksCalculator(cache, clock)` |
-| `formula="(c0 - c1)"` in SyntheticInstrument | Use instrument ID values: `formula="A.X - B.X"` |
 | `SyntheticInstrument(sym, prec, comps, formula)` | 6 required args — also needs `ts_event`, `ts_init` |
-| `DydxOraclePrice` custom data type | Does not exist in v1.224.0 |
-| `from nautilus_pyo3 import black_scholes_greeks` | `from nautilus_trader.core.nautilus_pyo3 import black_scholes_greeks` |
-| `from nautilus_trader.common.clock import TestClock` | Use `from nautilus_trader.common.component import LiveClock` |
-| `from nautilus_trader.common.config import CacheConfig` | `from nautilus_trader.cache.config import CacheConfig` |
-| `Equity(..., max_price=, min_price=)` | Cython Equity has no max_price/min_price params |
-| `FuturesContract(..., size_precision=, size_increment=)` | Cython FuturesContract has no size_precision/size_increment — hardcoded to 0/1 |
-| `BacktestEngine.add_venue(venue=BacktestVenueConfig(...))` | Takes positional args: `add_venue(venue=Venue, oms_type=, account_type=, starting_balances=)`. `BacktestVenueConfig` is for `BacktestRunConfig` only |
+| `from nautilus_trader.core.nautilus_pyo3` wrong path | `from nautilus_trader.core.nautilus_pyo3 import black_scholes_greeks` |
+| `BacktestEngine.add_venue(venue=BacktestVenueConfig(...))` | Takes positional args. `BacktestVenueConfig` is for `BacktestRunConfig` only |
 | `DYDXDataClientConfig` (uppercase) | `DydxDataClientConfig` (mixed case) |
+| `DydxOraclePrice` custom data type | Does not exist in v1.224.0 |
+| `from nautilus_trader.common.clock import TestClock` | Use `from nautilus_trader.common.component import LiveClock` |
+| `from nautilus_trader.common.config import CacheConfig` | `from nautilus_trader.config import CacheConfig` or `nautilus_trader.cache.config` |
+| `Equity(..., max_price=, min_price=)` | Constructor rejects these kwargs — properties exist but return None |
+| `FuturesContract(..., size_precision=, size_increment=)` | Hardcoded to 0/1 in Cython |
+| `RSI` value in [0, 100] | Value in [0, 1] — divide by 100 if comparing to standard |
+| Indicator warmup returns NaN | Returns partial values (silently wrong, not NaN) — guard with `indicators_initialized()` |
+| `BookType.L3_MBO` for crypto | L3 not available on crypto exchanges — L2 at best. L3 is for traditional exchanges only |
+| `subscribe_funding_rates()` everywhere | Method exists on Strategy but not all adapters support the feed |
+| `subscribe_instrument_status()` on Binance | Binance does NOT implement this — not all adapters support it |
+| `MarketStatusAction.RESUME` | Does not exist — use `TRADING` to detect resumption |
+| `BinanceAccountType.USDT_FUTURE` (no S) | Must be `USDT_FUTURES` (with S) |
+| `modify_order` auto-fallback | Adapter errors if venue doesn't support — no auto cancel+replace fallback |
+| `InstrumentStatus` stops order flow | Does NOT automatically stop orders — strategy must react manually |
 
 ## References
 
 Detailed coverage in supporting files:
 
-- **Trading**: [market_making.md](references/market_making.md), [execution_and_oms.md](references/execution_and_oms.md), [derivatives.md](references/derivatives.md)
+- **Trading**: [market_making.md](references/market_making.md), [execution.md](references/execution.md), [derivatives.md](references/derivatives.md)
 - **Options & Greeks**: [options_and_greeks.md](references/options_and_greeks.md) — CryptoOption, OptionContract, OptionSpread, BinaryOption, GreeksCalculator, Black-Scholes
 - **Prediction & Betting**: [prediction_and_betting.md](references/prediction_and_betting.md) — Polymarket (BinaryOption), Betfair (BettingInstrument)
-- **DEX & On-Chain**: [dex_and_onchain.md](references/dex_and_onchain.md) — Hyperliquid, dYdX v4 supplements
 - **Traditional Finance**: [traditional_finance.md](references/traditional_finance.md) — Equity, FuturesContract, Interactive Brokers
-- **Synthetic**: [synthetic_instruments.md](references/synthetic_instruments.md) — SyntheticInstrument formula-based derived instruments
-- **Data**: [order_book.md](references/order_book.md), [microstructure.md](references/microstructure.md), [actors_and_signals.md](references/actors_and_signals.md)
-- **Infrastructure**: [live_trading.md](references/live_trading.md), [backtesting_and_simulation.md](references/backtesting_and_simulation.md), [clock_and_timers.md](references/clock_and_timers.md)
-- **Venues**: [exchange_adapters.md](references/exchange_adapters.md) (12 adapters), [operational_patterns.md](references/operational_patterns.md)
+- **Data & Microstructure**: [order_book.md](references/order_book.md), [backtesting.md](references/backtesting.md), [actors_and_signals.md](references/actors_and_signals.md)
+- **Infrastructure**: [execution.md](references/execution.md), [operations.md](references/operations.md), [backtesting.md](references/backtesting.md)
+- **Venues**: [exchange_adapters.md](references/exchange_adapters.md) (12 adapters)
 - **Development**: [adapter_development_python.md](references/adapter_development_python.md), [adapter_development_rust.md](references/adapter_development_rust.md), [dev_environment.md](references/dev_environment.md)
 
 ## Examples

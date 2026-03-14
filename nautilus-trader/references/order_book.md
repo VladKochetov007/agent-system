@@ -74,11 +74,13 @@ def on_order_book(self, book: OrderBook) -> None:
 - Without `F_LAST`: DataEngine buffers indefinitely → subscribers never receive data
 
 ```python
+from nautilus_trader.model.data import BookOrder, OrderBookDelta  # BookOrder is in model.data, NOT model.book
+
 # Single delta — always F_LAST
 delta = OrderBookDelta(
     instrument_id=instrument_id,
     action=BookAction.UPDATE,
-    order=BookOrder(side=OrderSide.BUY, price=price, size=qty, order_id=0),
+    order=BookOrder(OrderSide.BUY, price, qty, 0),  # positional: side, Price, size, order_id
     flags=RecordFlag.F_LAST,  # mandatory for standalone
     sequence=seq,
     ts_event=ts_event,
@@ -314,3 +316,16 @@ Access managed books: `book = self.cache.order_book(instrument_id)`
 - **Cache instrument reference** in `on_start()` — avoid repeated lookups in hot path
 - Keep `on_order_book_deltas` minimal — fires at tick frequency
 - Always validate **sequence numbers** to detect gaps early
+
+## Anti-Hallucination Notes
+
+| Hallucination | Reality |
+|--------------|---------|
+| `BookType.L3_MBO` for crypto | Not available on crypto exchanges — L3 requires per-order-ID feeds (traditional exchanges only) |
+| `book.filtered_view()` | Does NOT exist — implement manually by subtracting `own_order_book()` from public book |
+| `level.count` / `book.count` | `book.update_count` for update count. `level.orders()` for L3 order list |
+| `get_avg_px_qty_for_exposure()` | Does NOT exist — compute manually: `notional / get_avg_px_for_quantity()` |
+| Omitting `F_LAST` flag on deltas | DataEngine buffers indefinitely — subscribers never receive data |
+| `book.best_bid_price()` returns float | Returns `Price` object — cast with `float(book.best_bid_price())` |
+| `from nautilus_trader.model.book import BookOrder` | `from nautilus_trader.model.data import BookOrder` — BookOrder is in `model.data` |
+| `BookOrder(price=, size=, side=)` kwargs | Positional only: `BookOrder(OrderSide, Price, Quantity, order_id)` |

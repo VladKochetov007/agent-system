@@ -446,6 +446,9 @@ These do **NOT** exist in v1.224.0:
 | `OptionGreeks` data type | Named `GreeksData` (from `nautilus_trader.model.greeks_data`) |
 | `GreeksData.delta` as property | It's a plain field on a `@customdataclass` |
 | `black_scholes_greeks(..., vol, is_call)` order | Correct order: `spot, rate, cost_of_carry, vol, is_call, strike, time` |
+| `vol=65` (percentage) | Must be decimal: `vol=0.65` — not percentage |
+| `CryptoOption.underlying` is `str` | It's `Currency` object: `Currency.from_str("BTC")` |
+| `OptionContract.underlying` is `Currency` | It's `str`: `underlying="AAPL"` |
 
 ## Import Paths
 

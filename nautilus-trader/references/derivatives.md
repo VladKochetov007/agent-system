@@ -1,6 +1,6 @@
-# Derivatives
+# Derivatives & Synthetic Instruments
 
-CryptoPerpetual, CryptoFuture, mark price, funding rates, liquidation, and circuit breakers in NautilusTrader.
+CryptoPerpetual, CryptoFuture, PerpetualContract, SyntheticInstrument, mark price, funding rates, liquidation, DEX trading patterns in NautilusTrader.
 
 > **Options**: For CryptoOption, OptionContract, OptionSpread, BinaryOption, greeks calculation, and Black-Scholes functions, see [options_and_greeks.md](options_and_greeks.md).
 
@@ -57,12 +57,91 @@ perp = PerpetualContract(
     ts_event=0,
     ts_init=0,
 )
-
-perp.underlying              # "EURUSD"
-perp.asset_class             # AssetClass.FX
 ```
 
 Use `CryptoPerpetual` for crypto venues (Binance, Bybit, etc.). Use `PerpetualContract` when the underlying is non-crypto or when the adapter provides it.
+
+### SyntheticInstrument
+
+Formula-based derived instruments from component instruments. Implemented in Rust.
+
+```python
+from nautilus_trader.model.instruments import SyntheticInstrument
+from nautilus_trader.model.identifiers import InstrumentId, Symbol
+
+synth = SyntheticInstrument(
+    symbol=Symbol("BTC-ETH-SPREAD"),
+    price_precision=2,                      # max 9
+    components=[                            # minimum 2 required
+        InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
+        InstrumentId.from_str("ETHUSDT-PERP.BINANCE"),
+    ],
+    formula="BTCUSDT-PERP.BINANCE - ETHUSDT-PERP.BINANCE * 20",
+    ts_event=0,                             # required
+    ts_init=0,                              # required
+)
+```
+
+**Constructor**: 6 required args — `symbol`, `price_precision` (0-9, max 9 — raises `ValueError`), `components` (min 2), `formula`, `ts_event`, `ts_init`.
+
+**ID format**: `{symbol}.SYNTH` — the venue is always `SYNTH`.
+
+**Formula notation**: Components referenced by instrument ID values. Hyphens in IDs converted to underscores internally. Standard arithmetic: `+`, `-`, `*`, `/`, parentheses.
+
+```python
+formula = "BTCUSDT-PERP.BINANCE - ETHUSDT-PERP.BINANCE * 20"  # spread
+formula = "BTCUSDT-PERP.BINANCE / ETHUSDT-PERP.BINANCE"        # ratio
+formula = "A.X * 0.5 + B.X * 0.5"                              # weighted basket
+```
+
+**calculate()**: Compute synthetic price from component prices.
+
+```python
+price = synth.calculate([95000.0, 3200.0])  # Price("31000.00")
+```
+
+Raises `ValueError` if inputs empty, contains NaN, or length != components count. Raises `RuntimeError` on formula evaluation errors.
+
+**change_formula()**: Update formula at runtime. `synth.change_formula("A.X / B.X")`. Does NOT validate at call time — errors surface at `calculate()` time.
+
+**Properties**: `synth.id`, `synth.price_precision`, `synth.price_increment`, `synth.components`, `synth.formula` (stored with underscores), `synth.ts_event`, `synth.ts_init`.
+
+**Integration**: All component instruments must exist in cache before defining a synthetic.
+
+```python
+def on_start(self) -> None:
+    btc = self.cache.instrument(InstrumentId.from_str("BTCUSDT-PERP.BINANCE"))
+    eth = self.cache.instrument(InstrumentId.from_str("ETHUSDT-PERP.BINANCE"))
+    synth = SyntheticInstrument(
+        symbol=Symbol("BTC-ETH"), price_precision=2,
+        components=[btc.id, eth.id],
+        formula="BTCUSDT-PERP.BINANCE - ETHUSDT-PERP.BINANCE * 20",
+        ts_event=self.clock.timestamp_ns(), ts_init=self.clock.timestamp_ns(),
+    )
+    self.subscribe_quote_ticks(btc.id)
+    self.subscribe_quote_ticks(eth.id)
+```
+
+**Use cases**: Spread instruments, ratios, custom baskets, cross-exchange spreads.
+
+| Hallucination | Reality |
+|--------------|---------|
+| `formula="(c0 - c1 * 20)"` | Use instrument ID values: `formula="A.X - B.X * 20"` |
+| `SyntheticInstrument(symbol, precision, components, formula)` | 6 required args — also needs `ts_event` and `ts_init` |
+| Single component | Minimum 2 components required (raises ValueError) |
+| `price_precision > 9` | Max is 9 (raises ValueError) |
+| Pickling/serialization | Currently NOT safe to pickle synthetic instruments |
+
+### Common Derivatives Hallucinations
+
+| Hallucination | Reality |
+|--------------|---------|
+| `PerpetualContract.underlying` is `Currency` | It's `str` — only `CryptoPerpetual` uses `Currency` for underlying |
+| `subscribe_funding_rates()` everywhere | Method exists on Strategy but not all adapters support the feed |
+| `MarketStatusAction.RESUME` | Does not exist — use `TRADING` to detect resumption |
+| HALT/PAUSE/SUSPEND differ in behavior | Functionally equivalent in v1.224.0 — matching engine doesn't differentiate |
+| `GenericDataWrangler` for funding data | Does not exist — construct `FundingRateUpdate` objects directly |
+| `subscribe_instrument_status()` stops orders | Does NOT automatically stop order flow — strategy must react manually |
 
 ### CryptoOption
 
@@ -102,7 +181,7 @@ where:
   price_3 = index_price
 ```
 
-Other exchanges may use different formulas (weighted averages, EMA-smoothed index, etc.). **Always check your exchange's documentation** for the exact mark price methodology — it directly affects liquidation prices.
+Other exchanges may use different formulas. **Always check your exchange's documentation.**
 
 ### Subscription
 
@@ -151,10 +230,9 @@ def on_data(self, data) -> None:
         data.next_funding_ns # int — next funding timestamp (nanoseconds)
 ```
 
-**Other adapters** may provide funding through different data types or require REST polling. Check each adapter's available custom data types.
+**Other adapters** may provide funding through different data types or require REST polling.
 
-> For an example of extracting funding rates into standard `FundingRateUpdate` objects via
-> an Actor (custom data type pattern), see `examples/binance_enrichment_actor.py`.
+> For an example of extracting funding rates into standard `FundingRateUpdate` objects via an Actor (custom data type pattern), see `examples/binance_enrichment_actor.py`.
 
 ### Mechanics
 
@@ -171,8 +249,6 @@ funding_payment = position_notional * funding_rate
 position_notional = abs(position_size) * mark_price
 ```
 
-**Always verify** your exchange's funding schedule for each instrument — some exchanges allow variable intervals per pair.
-
 ### Funding as Inventory Carrying Cost
 
 For MM strategies holding perp positions, funding is an additional cost/benefit that should factor into the reservation price:
@@ -183,7 +259,7 @@ For MM strategies holding perp positions, funding is an additional cost/benefit 
 funding_cost = float(pos.signed_qty) * mark_price * self._current_funding_rate
 ```
 
-Positive funding + long position = cost. Negative funding + long position = income. Factor this into whether to carry inventory through the next funding window.
+Positive funding + long position = cost. Negative funding + long position = income.
 
 ### Funding Arbitrage
 
@@ -198,7 +274,6 @@ class FundingArbitrage(Strategy):
     def on_data(self, data) -> None:
         if isinstance(data, FundingRateUpdate):
             if data.rate > self.config.min_rate:
-                # Short perp (receive funding), long spot (hedge)
                 if self.portfolio.is_flat(self.config.perp_id):
                     self._short_perp()
                     self._long_spot()
@@ -217,13 +292,7 @@ Open Interest (OI) = total outstanding contracts. Key signal for:
 - Leverage buildup (rising OI + flat price = squeeze risk)
 - Position unwind (falling OI + falling price = long liquidation cascade)
 
-### Open Interest Access
-
-OI availability varies by exchange — some provide WebSocket streams, others are REST-only. Poll via timer-based REST requests when WS is unavailable.
-
-**Example (Binance REST)**: `GET /fapi/v1/openInterest` with `symbol` param.
-
-Check [exchange_adapters.md](exchange_adapters.md) for per-venue REST endpoints and rate limits.
+OI availability varies by exchange — some provide WebSocket streams, others are REST-only (e.g., Binance: `GET /fapi/v1/openInterest`). Poll via timer-based REST requests using `HttpClient`. Check [exchange_adapters.md](exchange_adapters.md) for per-venue details.
 
 ### Custom Data Example: OpenInterestData
 
@@ -246,8 +315,7 @@ class OpenInterestData(Data):
         return self._ts_init
 ```
 
-> See `examples/binance_enrichment_actor.py` for a complete example of custom data types with
-> timer-based REST polling and WebSocket data extraction via Actor.
+> See `examples/binance_enrichment_actor.py` for custom data types with timer-based REST polling and WebSocket data extraction via Actor.
 
 ## Liquidation Mechanics
 
@@ -269,7 +337,7 @@ Triggered by **mark price**, not last trade price.
 # Short: liquidation_price ≈ entry * (1 + initial_margin - maintenance_margin)
 ```
 
-> **Disclaimer**: This is a simplified estimation. Actual liquidation prices depend on: cross-margin vs isolated margin mode, accumulated funding payments, tiered maintenance margin rates (higher tiers have higher maintenance requirements), and insurance fund deductions. **Always use the exchange's liquidation price calculator for production systems.**
+> **Disclaimer**: Simplified estimation. Actual liquidation prices depend on: cross vs isolated margin mode, accumulated funding, tiered maintenance margin rates, insurance fund deductions. **Always use the exchange's calculator for production.**
 
 ### ADL (Auto-Deleveraging)
 
@@ -281,14 +349,13 @@ When insurance fund depletes, the exchange forcibly closes profitable opposing p
 
 ## Circuit Breakers & Market Halts
 
-Exchanges can halt/pause trading for various reasons (price limits, volatility, maintenance). NautilusTrader provides `InstrumentStatus` events for this, but **adapter support varies** — Binance does NOT implement `subscribe_instrument_status()`. See [traditional_finance.md](traditional_finance.md#market-session--instrument-status) for the full `MarketStatusAction` / `TradingState` system.
+Exchanges can halt/pause trading. NautilusTrader provides `InstrumentStatus` events, but **adapter support varies** — Binance does NOT implement `subscribe_instrument_status()`. See [traditional_finance.md](traditional_finance.md#market-session--instrument-status) for the full `MarketStatusAction` / `TradingState` system.
 
 ```python
 from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.enums import MarketStatusAction
 
 def on_start(self) -> None:
-    # Not all adapters support this — check adapter docs
     self.subscribe_instrument_status(self.config.instrument_id)
     self._halted = False
 
@@ -300,13 +367,12 @@ def on_instrument_status(self, status: InstrumentStatus) -> None:
         self._halted = False
 ```
 
-**Note**: `MarketStatusAction.RESUME` does not exist — use `TRADING` to detect resumption. HALT, PAUSE, and SUSPEND are functionally equivalent in v1.224.0 — the backtest matching engine does not enforce them. Your strategy must implement halt logic manually.
+**Note**: `MarketStatusAction.RESUME` does not exist — use `TRADING` to detect resumption. HALT, PAUSE, and SUSPEND are functionally equivalent in v1.224.0.
 
 ## Position Margin
 
 ```python
 account = self.portfolio.account(Venue("BINANCE"))
-# cache.position_for_instrument() does NOT exist — use positions_open() filtered by instrument
 positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
 position = positions[0] if positions else None
 
@@ -323,8 +389,6 @@ account.balance_locked(USDT)    # locked as margin
 
 ```python
 # GenericDataWrangler does NOT exist in v1.224.0
-# Available wranglers: TradeTickDataWrangler, QuoteTickDataWrangler,
-#   OrderBookDeltaDataWrangler, BarDataWrangler
 # For custom data like FundingRateUpdate, construct objects directly:
 funding_events = [
     FundingRateUpdate(instrument_id=inst_id, rate=rate, ts_event=ts, ts_init=ts)
@@ -333,4 +397,29 @@ funding_events = [
 engine.add_data(funding_events)
 ```
 
-Funding events process in timestamp order alongside market data.
+Funding events process in timestamp order alongside market data. Available wranglers for other data types: `TradeTickDataWrangler`, `QuoteTickDataWrangler`, `OrderBookDeltaDataWrangler`, `BarDataWrangler`.
+
+## DEX Trading Considerations
+
+### Wallet vs API Key Authentication
+
+| Venue Type | General Approach | Config Field |
+|------------|-----------------|-------------|
+| DEX (Hyperliquid, dYdX) | Wallet private key | `private_key` |
+| Hybrid (Polymarket) | Wallet + API creds | `private_key` + `api_key/secret/passphrase` |
+| CEX (Binance, Bybit, OKX) | API key + secret | `api_key` + `api_secret` |
+
+### On-Chain Settlement
+
+- **Finality**: DEX trades final on block confirmation; CEX trades final immediately
+- **Gas/fees**: Protocol-level fees or chain gas (e.g., Polygon gas for Polymarket)
+- **Order signing latency**: On-chain signature adds latency vs CEX API calls
+- **Rate limits**: Blockchain throughput replaces traditional rate limits; some DEXes add explicit per-block limits
+
+### DEX Testnet Support
+
+| Venue | Testnet | Config |
+|-------|---------|--------|
+| Hyperliquid | Yes | `testnet=True` |
+| dYdX | Yes | `is_testnet=True` |
+| Polymarket | No official testnet | — |

@@ -283,3 +283,14 @@ Binary options resolve to exactly `0` or `1`. Near resolution:
 - Quote ticks may have missing sides (`drop_quotes_missing_side=True` handles this)
 
 Monitor `expiration_utc` and reduce/close positions before resolution if the strategy isn't designed to hold through resolution.
+
+## Anti-Hallucination Notes
+
+| Hallucination | Reality |
+|--------------|---------|
+| `load_all=True` for Polymarket | Dangerous — 151k+ instruments. Always use filters (`load_ids`, `load_conditions`) |
+| `post_only` on Polymarket | Not available |
+| `reduce_only` on Polymarket | Not available |
+| Stop orders on Polymarket | Not available |
+| `modify_order` on Polymarket | Not supported — cancel + replace only |
+| `BinaryOption.margin_init` matters | Always `Decimal(0)` — no margin on binary options |
